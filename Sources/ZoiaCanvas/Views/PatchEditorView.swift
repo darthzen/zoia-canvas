@@ -18,6 +18,12 @@ private struct PendingCable {
 struct PatchEditorView: View {
     @Bindable var document: PatchDocument
     @Binding var selection: UUID?
+    /// Live engine, for the cable activity lights: flow dashes appear
+    /// only while the patch plays AND the lane's source block carries
+    /// signal. Nil (previews, tests) draws plain cables.
+    var engine: AudioEngine?
+
+    private var isPlaying: Bool { engine?.isRunning ?? false }
 
     @State private var offset: CGSize = .zero
     @State private var panStart: CGSize = .zero
@@ -27,15 +33,29 @@ struct PatchEditorView: View {
     @State private var selectedCable: UUID?
     @State private var renamingPage: Int?
     @State private var renameText = ""
+    /// Editor frame in WINDOW coordinates (bottom-left origin — the same
+    /// space as NSEvent.locationInWindow, so the scroll monitor needs no
+    /// coordinate conversion).
+    @State private var editorWindowFrame: CGRect = .zero
+    @State private var editorWindowNumber = -1
+    @State private var scrollMonitor: Any?
+    @State private var keyMonitor: Any?
+    @State private var zoomAtGestureStart: CGFloat?
+    /// Delete only reaches onDeleteCommand while the editor is first
+    /// responder; every click into the canvas reclaims focus (the search
+    /// field and inspector take it while typing).
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         GeometryReader { _ in
             ZStack(alignment: .topLeading) {
                 DotGridBackground(offset: offset, zoom: zoom)
-                TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                TimelineView(.animation(minimumInterval: 1.0 / 30,
+                                        paused: !isPlaying && pendingCable == nil)) { timeline in
                     CableLayer(document: document,
                                pending: pendingCableSegments(),
                                selectedCable: selectedCable,
+                               engine: engine,
                                offset: offset, zoom: zoom,
                                time: timeline.date.timeIntervalSinceReferenceDate)
                 }
@@ -43,14 +63,53 @@ struct PatchEditorView: View {
             }
             .contentShape(Rectangle())
             .gesture(panGesture)
-            .gesture(MagnifyGesture().onChanged { zoom = min(max($0.magnification, 0.25), 3) })
+            // Pinch zoom accumulates across gestures: magnification is
+            // relative to THIS pinch's start, so it scales the zoom the
+            // gesture began at rather than overwriting it.
+            .gesture(MagnifyGesture()
+                .onChanged { value in
+                    let base = zoomAtGestureStart ?? zoom
+                    zoomAtGestureStart = base
+                    zoom = min(max(base * value.magnification, 0.25), 3)
+                }
+                .onEnded { _ in zoomAtGestureStart = nil })
+            // Single click router for the whole canvas: module under the
+            // cursor wins, then cable, then clear. One place decides, so
+            // node taps and cable taps can't fight over the selection.
             .onTapGesture { location in
-                selection = nil
-                selectedCable = cableHit(at: toWorld(location))
+                let world = toWorld(location)
+                if let module = moduleHit(at: world) {
+                    selection = module.id
+                    selectedCable = nil
+                } else if let cable = cableHit(at: world) {
+                    selectedCable = cable
+                    selection = nil
+                } else {
+                    selection = nil
+                    selectedCable = nil
+                }
+                editorFocused = true
             }
             .onDrop(of: [.plainText], isTargeted: nil) { providers, location in
                 dropModule(providers: providers, at: toWorld(location))
             }
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($editorFocused)
+        .background(WindowFrameReader(frame: $editorWindowFrame,
+                                      windowNumber: $editorWindowNumber)
+            .allowsHitTesting(false))
+        .onAppear {
+            editorFocused = true
+            installEventMonitors()
+        }
+        .onDisappear {
+            for monitor in [scrollMonitor, keyMonitor].compactMap({ $0 }) {
+                NSEvent.removeMonitor(monitor)
+            }
+            scrollMonitor = nil
+            keyMonitor = nil
         }
         .onDeleteCommand {
             if let cable = selectedCable {
@@ -138,11 +197,14 @@ struct PatchEditorView: View {
                 isSelected: selection == module.id)
             .scaleEffect(zoom, anchor: .topLeading)
             .position(nodeCenter(module, blockCount: blocks.count))
-            .onTapGesture {
-                selection = module.id
-                selectedCable = nil
-            }
             .gesture(nodeGesture(module, blocks: blocks))
+            .contextMenu {
+                Button("Delete \(module.customName.isEmpty ? (document.catalog[module.typeID]?.name ?? "Module") : module.customName)",
+                       role: .destructive) {
+                    document.removeModule(module.id)
+                    if selection == module.id { selection = nil }
+                }
+            }
         }
     }
 
@@ -181,6 +243,67 @@ struct PatchEditorView: View {
 
     // MARK: - Gestures
 
+    /// Local NSEvent monitors, both scoped by editorWindowFrame /
+    /// editorWindowNumber (window coordinates, from WindowFrameReader):
+    /// - scrollWheel: two-finger trackpad panning. SwiftUI has no
+    ///   scroll-wheel gesture on macOS; events over the palette and
+    ///   inspector pass through to their ScrollViews.
+    /// - keyDown ⌫/⌦: deletes the selected cable or module. The SwiftUI
+    ///   focus system proved unreliable for onDeleteCommand here, so the
+    ///   key is handled at the AppKit layer; keystrokes while a text
+    ///   field is editing pass through untouched.
+    private func installEventMonitors() {
+        installScrollMonitor()
+        installKeyMonitor()
+    }
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 51 || event.keyCode == 117,  // ⌫ / ⌦
+                  event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            else { return event }
+            let windowNumber = event.window?.windowNumber ?? -2
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard windowNumber == editorWindowNumber,
+                      !(NSApp.keyWindow?.firstResponder is NSTextView) else { return false }
+                if let cable = selectedCable {
+                    document.removeConnection(cable)
+                    selectedCable = nil
+                    return true
+                }
+                if let selected = selection {
+                    document.removeModule(selected)
+                    selection = nil
+                    return true
+                }
+                return false
+            }
+            return handled ? nil : event
+        }
+    }
+
+    private func installScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            // NSEvent is not Sendable; pull the values out before hopping
+            // into the isolation the monitor already runs on (main thread).
+            let deltaX = event.scrollingDeltaX
+            let deltaY = event.scrollingDeltaY
+            let location = event.locationInWindow
+            let windowNumber = event.window?.windowNumber ?? -2
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard windowNumber == editorWindowNumber,
+                      editorWindowFrame.contains(location) else { return false }
+                offset.width += deltaX
+                offset.height += deltaY
+                panStart = offset
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
     private var panGesture: some Gesture {
         DragGesture()
             .onChanged { value in
@@ -208,6 +331,7 @@ struct PatchEditorView: View {
                     draggedModule = (module.id, module.canvasPosition)
                     selection = module.id
                     selectedCable = nil
+                    editorFocused = true
                 }
                 updateActiveDrag(value)
             }
@@ -278,7 +402,20 @@ struct PatchEditorView: View {
             isAudio: pending.source.type.isAudio, ruling: pending.ruling)
     }
 
-    // MARK: - Cable hit testing (world coordinates)
+    // MARK: - Hit testing (world coordinates)
+
+    /// Topmost module whose frame contains the point (later modules draw
+    /// on top, so search in reverse document order).
+    private func moduleHit(at world: CGPoint) -> CanvasModule? {
+        for module in document.modules.reversed() {
+            let blocks = module.activeBlocks(in: document.catalog)
+            let frame = CGRect(origin: module.canvasPosition,
+                               size: CGSize(width: NodeMetrics.width,
+                                            height: NodeMetrics.height(blockCount: blocks.count)))
+            if frame.contains(world) { return module }
+        }
+        return nil
+    }
 
     /// The cable nearest the tap, within a constant ~12pt screen radius.
     /// Distance to a cable is the minimum over sampled points of its
@@ -320,16 +457,25 @@ struct CableLayer: View {
     let document: PatchDocument
     let pending: Pending?
     let selectedCable: UUID?
+    /// Live engine for per-lane activity. Nil draws plain cables.
+    let engine: AudioEngine?
     let offset: CGSize
     let zoom: CGFloat
-    /// Drives the flow animation; connection strength scales its speed and
-    /// brightness. When the audio engine exists this will modulate off live
-    /// signal instead.
+    /// Drives the flow animation; signal level gates it per lane and
+    /// connection strength scales its speed and brightness.
     let time: TimeInterval
 
     var body: some View {
-        Canvas { context, _ in
-            for connection in document.connections {
+        // One engine query per frame for every lane: flow lights appear
+        // only while the patch plays and the source block carries signal.
+        let indexOf = Dictionary(uniqueKeysWithValues: document.modules.enumerated().map { ($1.id, $0) })
+        let sources = document.connections.map {
+            (module: indexOf[$0.sourceModule] ?? -1, block: $0.sourceBlock)
+        }
+        let levels = (engine?.isRunning ?? false)
+            ? (engine?.sourceLevels(sources) ?? []) : []
+        return Canvas { context, _ in
+            for (index, connection) in document.connections.enumerated() {
                 guard let path = cablePath(connection) else { continue }
                 let color = cableColor(connection)
                 let strength = min(max(Double(connection.strengthRaw) / 10000, 0), 1)
@@ -345,9 +491,10 @@ struct CableLayer: View {
                 context.stroke(path, with: .color(color),
                                style: StrokeStyle(lineWidth: 2 * zoom, lineCap: .round))
 
-                // Bespoke-style energy flow: bright dashes marching from
-                // output to input. Phase decreases so motion runs with the
-                // path direction (source → destination).
+                // Energy flow: bright dashes marching source → destination,
+                // drawn only for lanes with live signal. Phase decreases so
+                // motion runs with the path direction.
+                guard index < levels.count, levels[index] > 0.001 else { continue }
                 let speed = (40 + 80 * strength) * zoom
                 context.stroke(
                     path,
@@ -420,6 +567,47 @@ struct CableLayer: View {
                       control2: CGPoint(x: to.x - dx, y: to.y))
         return path
     }
+}
+
+/// Invisible AppKit view that reports its frame in window coordinates
+/// (bottom-left origin) plus the window number — exactly what the scroll
+/// monitor needs to scope itself to the editor. hitTest returns nil so
+/// it never intercepts clicks.
+private struct WindowFrameReader: NSViewRepresentable {
+    @Binding var frame: CGRect
+    @Binding var windowNumber: Int
+
+    final class Reporter: NSView {
+        var onChange: ((CGRect, Int) -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func layout() {
+            super.layout()
+            report()
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            report()
+        }
+        private func report() {
+            guard let window else { return }
+            onChange?(convert(bounds, to: nil), window.windowNumber)
+        }
+    }
+
+    func makeNSView(context: Context) -> Reporter {
+        let view = Reporter()
+        view.onChange = { newFrame, newNumber in
+            // Defer past the current layout pass; direct writes here are
+            // state mutation during view update.
+            Task { @MainActor in
+                frame = newFrame
+                windowNumber = newNumber
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: Reporter, context: Context) {}
 }
 
 /// The original dot-grid substrate, now parameterized.

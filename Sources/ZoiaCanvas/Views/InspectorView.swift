@@ -7,6 +7,9 @@ import SwiftUI
 struct InspectorView: View {
     @Bindable var document: PatchDocument
     let moduleID: UUID
+    /// Param value readout: raw 0…1 CV fraction, or the MIDI note the
+    /// pitch mapping (fraction × 127) lands on. Persisted across launches.
+    @AppStorage("paramDisplayNotes") private var showNoteNames = false
 
     var body: some View {
         if let index = document.modules.firstIndex(where: { $0.id == moduleID }),
@@ -83,7 +86,18 @@ struct InspectorView: View {
         let blocks = document.paramBlocks(of: document.modules[index])
         if !blocks.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Params").font(.subheadline.bold())
+                HStack {
+                    Text("Params").font(.subheadline.bold())
+                    Spacer()
+                    Picker("", selection: $showNoteNames) {
+                        Text("CV").tag(false)
+                        Text("Note").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 90)
+                    .help("Show values as raw CV or as the MIDI note the pitch mapping lands on")
+                }
                 ForEach(Array(blocks.enumerated()), id: \.offset) { paramIndex, block in
                     HStack(spacing: 6) {
                         Text(block.key)
@@ -97,9 +111,9 @@ struct InspectorView: View {
                                     : 0
                             },
                             set: { document.setParam(moduleID, paramIndex: paramIndex, fraction: $0) }))
-                        Text(String(format: "%.2f",
-                                    paramIndex < document.modules[index].paramsRaw.count
-                                        ? Double(document.modules[index].paramsRaw[paramIndex]) / 65535 : 0))
+                        Text(valueLabel(
+                            paramIndex < document.modules[index].paramsRaw.count
+                                ? Double(document.modules[index].paramsRaw[paramIndex]) / 65535 : 0))
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 30)
@@ -107,6 +121,13 @@ struct InspectorView: View {
                 }
             }
         }
+    }
+
+    private func valueLabel(_ fraction: Double) -> String {
+        guard showNoteNames else { return String(format: "%.2f", fraction) }
+        let note = Int((fraction * 127).rounded())
+        let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        return names[note % 12] + String(note / 12 - 1)
     }
 }
 

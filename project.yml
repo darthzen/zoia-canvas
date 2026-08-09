@@ -13,16 +13,28 @@ targets:
     platform: macOS
     sources:
       - Sources/ZoiaCanvas
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.theashfords.ZoiaCanvas
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_NSMainStoryboardFile: ""
+    # Explicit Info.plist (xcodegen writes it at generate time) so the
+    # app can declare CFBundleDocumentTypes — .bin patches arrive typed
+    # as com.apple.macbinary-archive, and claiming that type is what
+    # makes Finder double-click, Dock drops, and `open -a` deliver the
+    # file to the app.
+    info:
+      path: Info.plist
+      properties:
         # Live play-through taps the input device; macOS requires a usage
         # string before granting microphone access. The target is not
         # sandboxed (no entitlements configured), so no
         # com.apple.security.device.audio-input entitlement is needed.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "ZoiaCanvas routes live audio input through your patch's Audio Input modules."
+        NSMicrophoneUsageDescription: "ZoiaCanvas routes live audio input through your patch's Audio Input modules."
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: ZOIA Patch
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.apple.macbinary-archive
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.theashfords.ZoiaCanvas
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO

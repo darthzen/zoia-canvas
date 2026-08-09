@@ -2,6 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    var requests = FileRequests()
+
     @State private var document: PatchDocument?
     @State private var selection: UUID?
     @State private var loadError: String?
@@ -23,6 +25,16 @@ struct ContentView: View {
         } message: {
             Text(loadError ?? "")
         }
+        .onChange(of: requests.openPanelTicket) { showingImporter = true }
+        .onChange(of: requests.exportTicket) {
+            if let document { exportBin(document) }
+        }
+        .onChange(of: requests.pendingURL) {
+            if let url = requests.pendingURL {
+                openBin(at: url)
+                requests.pendingURL = nil
+            }
+        }
     }
 
     private func loadCatalog() {
@@ -40,7 +52,8 @@ struct ContentView: View {
                 document.addModule(typeID: typeID,
                                    at: CGPoint(x: 320 + stagger, y: 120 + stagger))
             }
-            PatchEditorView(document: document, selection: $selection)
+            PatchEditorView(document: document, selection: $selection,
+                            engine: engine)
                 .coordinateSpace(name: "editor")
                 .frame(minWidth: 500, maxWidth: .infinity,
                        minHeight: 400, maxHeight: .infinity)
@@ -49,9 +62,22 @@ struct ContentView: View {
             }
         }
         .navigationTitle(document.patchName)
+        // Drop a .bin anywhere on the window to open it. The palette's
+        // module drags are plain-text payloads, so they never reach this
+        // file-URL handler.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                Task { @MainActor in openBin(at: url) }
+            }
+            return true
+        }
         .toolbar {
             ToolbarItemGroup {
                 DSPMeter(total: document.dspTotal)
+                inputSourceMenu
                 Button(engine.isRunning ? "Stop" : "Play",
                        systemImage: engine.isRunning ? "stop.fill" : "play.fill") {
                     if engine.isRunning {
@@ -78,6 +104,32 @@ struct ContentView: View {
                 openBin(at: url)
             }
         }
+    }
+
+    /// Capture-source picker: the mic, but also virtual loopback devices
+    /// (BlackHole, Loopback, aggregates), which is how another app's
+    /// audio gets played into the patch.
+    private var inputSourceMenu: some View {
+        Menu {
+            Button {
+                engine.selectInput(deviceID: nil)
+            } label: {
+                if engine.inputDeviceID == nil { Image(systemName: "checkmark") }
+                Text("System Default")
+            }
+            Divider()
+            ForEach(AudioEngine.availableInputDevices()) { device in
+                Button {
+                    engine.selectInput(deviceID: device.id)
+                } label: {
+                    if engine.inputDeviceID == device.id { Image(systemName: "checkmark") }
+                    Text(device.name)
+                }
+            }
+        } label: {
+            Label("Input", systemImage: "waveform.badge.mic")
+        }
+        .help("Audio input source — pick a loopback device (e.g. BlackHole) to route another app in")
     }
 
     private func openBin(at url: URL) {

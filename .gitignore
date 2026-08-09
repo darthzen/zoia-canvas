@@ -4,6 +4,8 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+# xcodegen writes this from project.yml's info: section on every generate
+/Info.plist
 
 # macOS
 .DS_Store

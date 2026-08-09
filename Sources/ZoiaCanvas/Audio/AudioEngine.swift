@@ -17,9 +17,12 @@ final class AudioEngine {
     private var sourceNode: AVAudioSourceNode?
     private let midiPort = CoreMidiPort()
     private let runtimeBox = RuntimeBox()
+    private let inputRing = InputRingBuffer()
     private var inputCapture: InputCapture?
     private(set) var isRunning = false
     private(set) var lastError: String?
+    /// Selected capture device; nil follows the system default input.
+    private(set) var inputDeviceID: AudioDeviceID?
 
     func start(document: PatchDocument) {
         rebuild(document: document)
@@ -28,9 +31,13 @@ final class AudioEngine {
         let format = engine.outputNode.outputFormat(forBus: 0)
         let sampleRate = format.sampleRate > 0 ? format.sampleRate : 48000
         let box = runtimeBox
-        let ring = InputRingBuffer()
+        let ring = inputRing
+        // @Sendable keeps the render closure out of MainActor isolation:
+        // formed inside this @MainActor method it would otherwise inherit
+        // it, and Swift 6's runtime isolation check then traps (SIGTRAP)
+        // on the CoreAudio IO thread the first time a device pulls audio.
         let node = AVAudioSourceNode(format: AVAudioFormat(
-            standardFormatWithSampleRate: sampleRate, channels: 2)!) { _, _, frameCount, audioBufferList -> OSStatus in
+            standardFormatWithSampleRate: sampleRate, channels: 2)!) { @Sendable _, _, frameCount, audioBufferList -> OSStatus in
             let frames = Int(frameCount)
             var inLeft = [Float](repeating: 0, count: frames)
             var inRight = [Float](repeating: 0, count: frames)
@@ -60,12 +67,110 @@ final class AudioEngine {
         if lastError == nil { lastError = inputWarning }
     }
 
+    // MARK: - Input routing
+
+    struct InputDevice: Identifiable, Hashable {
+        let id: AudioDeviceID
+        let name: String
+    }
+
+    /// Every CoreAudio device with input channels — the mic, but also
+    /// virtual loopbacks (BlackHole, Loopback) and aggregates, which is
+    /// how another app's output gets routed into the patch.
+    static func availableInputDevices() -> [InputDevice] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.compactMap { id in
+            guard inputChannelCount(id) > 0, let name = deviceName(id) else { return nil }
+            return InputDevice(id: id, name: name)
+        }
+    }
+
+    private static func inputChannelCount(_ device: AudioDeviceID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr,
+              size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, raw) == noErr else { return 0 }
+        let buffers = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    private static func deviceName(_ device: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var name: CFString? = nil
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &name) {
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr else { return nil }
+        return name as String?
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size, &id) == noErr,
+              id != kAudioObjectUnknown else { return nil }
+        return id
+    }
+
+    /// Points the capture side at a specific input device (nil = system
+    /// default). The engine restarts around the switch and the tap is
+    /// reinstalled at the new device's format.
+    func selectInput(deviceID: AudioDeviceID?) {
+        let wasRunning = isRunning
+        engine.stop()
+        isRunning = false
+        engine.inputNode.removeTap(onBus: 0)
+        inputCapture = nil
+        do {
+            guard let target = deviceID ?? Self.defaultInputDeviceID() else {
+                throw NSError(domain: "ZoiaCanvas", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "no input device available"])
+            }
+            try engine.inputNode.auAudioUnit.setDeviceID(target)
+            inputDeviceID = deviceID
+        } catch {
+            lastError = "Input switch failed: \(error.localizedDescription)"
+        }
+        let sampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        let warning = installInputTap(into: inputRing,
+                                      outputSampleRate: sampleRate > 0 ? sampleRate : 48000)
+        if wasRunning {
+            resume()
+            if lastError == nil { lastError = warning }
+        }
+    }
+
     /// Installs the capture tap on the input node. Returns a warning string
     /// when live input is unavailable — output still renders, Audio Input
     /// modules just read silence.
     private func installInputTap(into ring: InputRingBuffer,
                                  outputSampleRate: Double) -> String? {
         let input = engine.inputNode
+        input.removeTap(onBus: 0)  // safe when none; guards double-install
         let inputFormat = input.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             return "No audio input device — Audio Input modules read silence."
@@ -75,7 +180,9 @@ final class AudioEngine {
                                          ring: ring) else {
             return "Unsupported input format (\(inputFormat)) — Audio Input modules read silence."
         }
-        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
+        // Same @Sendable escape hatch as the render closure: the tap fires
+        // on an audio thread and must not carry MainActor isolation.
+        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { @Sendable buffer, _ in
             capture.process(buffer)
         }
         inputCapture = capture
@@ -99,6 +206,29 @@ final class AudioEngine {
     func stop() {
         engine.pause()
         isRunning = false
+    }
+
+    /// Peak output level per (module index, block) pair, for the cable
+    /// activity lights. One lock round-trip for the whole list; the box
+    /// lock also serializes against the render callback, so the node
+    /// dictionaries are never read mid-mutation. Entries with a negative
+    /// module index (unresolved) read 0.
+    func sourceLevels(_ sources: [(module: Int, block: Int)]) -> [Float] {
+        var levels = [Float](repeating: 0, count: sources.count)
+        guard isRunning else { return levels }
+        runtimeBox.withRuntime { runtime in
+            guard let runtime else { return }
+            for (i, source) in sources.enumerated()
+            where source.module >= 0 && source.module < runtime.nodes.count {
+                let node = runtime.nodes[source.module]
+                if let cv = node.cvOut[source.block] {
+                    levels[i] = abs(cv)
+                } else if let audio = node.audioOut[source.block] {
+                    levels[i] = audio.reduce(0) { max($0, abs($1)) }
+                }
+            }
+        }
+        return levels
     }
 
     /// Rebuilds the runtime from the current document; safe to call while
