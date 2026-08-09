@@ -1,0 +1,13 @@
+# Xcode
+ZoiaCanvas.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Python validation harness
+.venv/
+__pycache__/

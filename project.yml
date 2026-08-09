@@ -1,0 +1,55 @@
+name: ZoiaCanvas
+options:
+  bundleIdPrefix: org.theashfords
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+targets:
+  ZoiaCanvas:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/ZoiaCanvas
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.theashfords.ZoiaCanvas
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_STRICT_CONCURRENCY: complete
+  ZoiaCanvasTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ZoiaCanvasTests
+        excludes:
+          - "Corpus/**"
+      - path: Tests/ZoiaCanvasTests/Corpus
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: ZoiaCanvas
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ZoiaCanvas.app/Contents/MacOS/ZoiaCanvas"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  ZoiaCanvas:
+    build:
+      targets:
+        ZoiaCanvas: all
+        ZoiaCanvasTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ZoiaCanvasTests
