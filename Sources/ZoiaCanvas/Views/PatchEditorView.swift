@@ -195,7 +195,11 @@ struct PatchEditorView: View {
                 spec: document.catalog[module.typeID],
                 blocks: blocks,
                 isSelected: selection == module.id)
-            .scaleEffect(zoom, anchor: .topLeading)
+            // Center-anchored scale pairs with nodeCenter: .position places
+            // the unscaled frame's center, so scaling about that center puts
+            // the visual top-left exactly at toView(canvasPosition) — the
+            // same point the cable layer and hit testing use.
+            .scaleEffect(zoom)
             .position(nodeCenter(module, blockCount: blocks.count))
             .gesture(nodeGesture(module, blocks: blocks))
             .contextMenu {
@@ -252,16 +256,44 @@ struct PatchEditorView: View {
     ///   focus system proved unreliable for onDeleteCommand here, so the
     ///   key is handled at the AppKit layer; keystrokes while a text
     ///   field is editing pass through untouched.
+    /// - keyDown ⌘=/⌘-/⌘0: zoom in, out, and reset — the standard
+    ///   document-view zoom keys, handled here for the same reason.
     private func installEventMonitors() {
         installScrollMonitor()
         installKeyMonitor()
     }
 
+    /// =/- on the main row and keypad, plus 0 for reset.
+    private static let zoomInKeys: Set<UInt16> = [24, 69]
+    private static let zoomOutKeys: Set<UInt16> = [27, 78]
+    private static let zoomResetKey: UInt16 = 29
+
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.keyCode == 51 || event.keyCode == 117,  // ⌫ / ⌦
-                  event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            let keyCode = event.keyCode
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+            if modifiers == .command,
+               Self.zoomInKeys.contains(keyCode) || Self.zoomOutKeys.contains(keyCode)
+                   || keyCode == Self.zoomResetKey {
+                let zoomWindowNumber = event.window?.windowNumber ?? -2
+                let handled = MainActor.assumeIsolated { () -> Bool in
+                    guard zoomWindowNumber == editorWindowNumber else { return false }
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        if keyCode == Self.zoomResetKey {
+                            zoom = 1
+                        } else if Self.zoomInKeys.contains(keyCode) {
+                            zoom = min(zoom * 1.25, 3)
+                        } else {
+                            zoom = max(zoom / 1.25, 0.25)
+                        }
+                    }
+                    return true
+                }
+                return handled ? nil : event
+            }
+            guard keyCode == 51 || keyCode == 117,  // ⌫ / ⌦, with or without ⌘
+                  modifiers.subtracting(.command).isEmpty
             else { return event }
             let windowNumber = event.window?.windowNumber ?? -2
             let handled = MainActor.assumeIsolated { () -> Bool in
