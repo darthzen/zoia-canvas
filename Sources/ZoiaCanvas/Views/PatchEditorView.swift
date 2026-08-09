@@ -41,6 +41,9 @@ struct PatchEditorView: View {
             .gesture(panGesture)
             .gesture(MagnifyGesture().onChanged { zoom = min(max($0.magnification, 0.25), 3) })
             .onTapGesture { selection = nil }
+            .onDrop(of: [.plainText], isTargeted: nil) { providers, location in
+                dropModule(providers: providers, at: toWorld(location))
+            }
         }
         .onDeleteCommand {
             if let selected = selection {
@@ -60,8 +63,25 @@ struct PatchEditorView: View {
                 isSelected: selection == module.id)
             .scaleEffect(zoom, anchor: .topLeading)
             .position(nodeCenter(module, blockCount: blocks.count))
+            .onTapGesture { selection = module.id }
             .gesture(nodeGesture(module, blocks: blocks))
         }
+    }
+
+    private func dropModule(providers: [NSItemProvider], at world: CGPoint) -> Bool {
+        guard let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let text = object as? String,
+                  text.hasPrefix("zoia-module:"),
+                  let typeID = Int(text.dropFirst("zoia-module:".count)) else { return }
+            Task { @MainActor in
+                let centered = CGPoint(x: world.x - NodeMetrics.width / 2, y: world.y - 14)
+                if let added = document.addModule(typeID: typeID, at: centered) {
+                    selection = added.id
+                }
+            }
+        }
+        return true
     }
 
     // MARK: - Coordinate transforms

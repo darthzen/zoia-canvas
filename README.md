@@ -22,9 +22,20 @@ The canvas node editor is functional: searchable module palette, nodes with
 port-typed blocks (option-dependent layout ported from zoia_lib's
 `_calc_blocks`, oracle-tested over the corpus), cable creation by port drag
 (output→input enforced; audio↔cv mismatches warned, not blocked), node drag,
-selection and delete, DSP estimate meter, and `.bin` open/export in the
-toolbar. Still missing: a parameter/option inspector, cable selection and
-deletion, page management, and starred-param editing.
+drag-from-palette placement, selection and delete, an inspector (name, color,
+options, params — options re-layout blocks and resize the param list live,
+matching device behavior verified across the corpus), Bespoke-style animated
+cables, Empress-spreadsheet category colors, DSP estimate meter, and `.bin`
+open/export.
+
+An audio/MIDI preview engine (AVAudioEngine + CoreMIDI virtual "ZoiaCanvas
+In/Out" ports) renders a first module set offline-testably: audio in/out,
+sequencer (track 1; other tracks await saved_data decoding), LFO, oscillator,
+VCA, MIDI notes in/out. Unimplemented modules are silent. Pitch/LFO curves
+are documented assumptions pending hardware calibration.
+
+Still missing: cable selection/deletion, page management, starred params,
+live audio input capture, sequencer tracks 2–8.
 
 ## Building
 

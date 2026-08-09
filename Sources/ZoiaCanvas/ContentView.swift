@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var selection: UUID?
     @State private var loadError: String?
     @State private var showingImporter = false
+    @State private var engine = AudioEngine()
 
     var body: some View {
         Group {
@@ -43,11 +44,22 @@ struct ContentView: View {
                 .coordinateSpace(name: "editor")
                 .frame(minWidth: 500, maxWidth: .infinity,
                        minHeight: 400, maxHeight: .infinity)
+            if let selected = selection {
+                InspectorView(document: document, moduleID: selected)
+            }
         }
         .navigationTitle(document.patchName)
         .toolbar {
             ToolbarItemGroup {
                 DSPMeter(total: document.dspTotal)
+                Button(engine.isRunning ? "Stop" : "Play",
+                       systemImage: engine.isRunning ? "stop.fill" : "play.fill") {
+                    if engine.isRunning {
+                        engine.stop()
+                    } else {
+                        engine.start(document: document)
+                    }
+                }
                 Button("Open…", systemImage: "square.and.arrow.down") {
                     showingImporter = true
                 }
@@ -56,6 +68,9 @@ struct ContentView: View {
                 }
                 .disabled(document.modules.isEmpty)
             }
+        }
+        .onChange(of: document.structureRevision) {
+            if engine.isRunning { engine.rebuild(document: document) }
         }
         .fileImporter(isPresented: $showingImporter,
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data]) { result in

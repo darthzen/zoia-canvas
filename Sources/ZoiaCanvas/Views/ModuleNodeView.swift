@@ -21,6 +21,40 @@ enum NodeMetrics {
     }
 }
 
+/// Category colors lifted from Empress's fw5 module-index spreadsheet
+/// section fills (extracted from the sheet's xlsx export 2026-08-08).
+/// zoia_lib's "CV" category corresponds to Empress's "Control Modules".
+/// Styled Scratch-fashion: the pastel is the block fill, a darkened shade
+/// is the header/border, and text stays dark for contrast.
+struct CategoryStyle {
+    let fill: Color
+    let header: Color
+    let border: Color
+    let text: Color
+
+    init(r: Double, g: Double, b: Double) {
+        fill = Color(red: r, green: g, blue: b)
+        header = Color(red: r * 0.78, green: g * 0.78, blue: b * 0.78)
+        border = Color(red: r * 0.55, green: g * 0.55, blue: b * 0.55)
+        text = Color(red: 0.11, green: 0.11, blue: 0.13)
+    }
+}
+
+func categoryStyle(_ category: String) -> CategoryStyle {
+    switch category {
+    case "Interface": CategoryStyle(r: 0xB8 / 255, g: 0xCC / 255, b: 0xE4 / 255)
+    case "Audio": CategoryStyle(r: 0xE5 / 255, g: 0xB8 / 255, b: 0xB7 / 255)
+    case "CV": CategoryStyle(r: 0xD6 / 255, g: 0xE3 / 255, b: 0xBC / 255)
+    case "Analysis": CategoryStyle(r: 0xB4 / 255, g: 0xA7 / 255, b: 0xD6 / 255)
+    case "Effect": CategoryStyle(r: 0xFF / 255, g: 0xE5 / 255, b: 0x99 / 255)
+    default: CategoryStyle(r: 0.6, g: 0.6, b: 0.6)
+    }
+}
+
+func categoryColor(_ category: String) -> Color {
+    categoryStyle(category).fill
+}
+
 /// The ZOIA header colors, code 1–15 in device order.
 func zoiaColor(_ code: Int) -> Color {
     switch code {
@@ -54,19 +88,22 @@ struct ModuleNodeView: View {
     }
 
     var body: some View {
+        let style = categoryStyle(spec?.category ?? "")
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(zoiaColor(module.colorID))
+                    .overlay(Circle().stroke(style.border, lineWidth: 1))
                     .frame(width: 8, height: 8)
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(style.text)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
             .frame(height: NodeMetrics.headerHeight)
-            .background(.quaternary)
+            .background(style.header)
 
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 HStack(spacing: 4) {
@@ -74,8 +111,8 @@ struct ModuleNodeView: View {
                         PortDot(type: block.type)
                     }
                     Text(block.key)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(style.text.opacity(0.8))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity,
                                alignment: block.type.isOutput ? .trailing : .leading)
@@ -90,12 +127,12 @@ struct ModuleNodeView: View {
         }
         .frame(width: NodeMetrics.width,
                height: NodeMetrics.height(blockCount: blocks.count))
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(style.fill)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.4),
-                        lineWidth: isSelected ? 2 : 1))
+                .stroke(isSelected ? Color.accentColor : style.border,
+                        lineWidth: isSelected ? 2.5 : 1.5))
         .shadow(radius: 3, y: 1)
     }
 }
@@ -106,6 +143,7 @@ struct PortDot: View {
     var body: some View {
         Circle()
             .fill(type.isAudio ? Color.teal : Color.orange)
+            .overlay(Circle().stroke(.white.opacity(0.9), lineWidth: 1))
             .frame(width: NodeMetrics.portRadius * 2, height: NodeMetrics.portRadius * 2)
     }
 }
