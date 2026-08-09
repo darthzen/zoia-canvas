@@ -44,6 +44,10 @@ struct PatchEditorView: View {
     /// Where the user has dragged off-page connector cards; editor
     /// state only, reset on file open with the rest of the view.
     @State private var stubOffsets: [CableLayer.StubKey: CGSize] = [:]
+    /// Connector ends opened from their nodule into a full card.
+    /// Editor state, like `stubOffsets` — never persisted.
+    @State private var expandedStubs: Set<CableLayer.StubKey> = []
+    private var expandAll: Bool { document.isCardLayoutExpanded }
     @AppStorage("cableStyle") private var cableStyleRaw = CableStyle.curved.rawValue
     private var cableStyle: CableStyle { CableStyle(rawValue: cableStyleRaw) ?? .curved }
     private enum CanvasDrag {
@@ -60,6 +64,7 @@ struct PatchEditorView: View {
         GeometryReader { _ in
             ZStack(alignment: .topLeading) {
                 DotGridBackground(offset: offset, zoom: zoom)
+                pageFrames
                 TimelineView(.animation(minimumInterval: 1.0 / 30,
                                         paused: !isPlaying && pendingCable == nil)) { timeline in
                     CableLayer(document: document,
@@ -67,11 +72,28 @@ struct PatchEditorView: View {
                                selectedCable: selectedCable,
                                stubOffsets: stubOffsets,
                                style: cableStyle,
+                               expandedStubs: expandedStubs,
+                               expandAll: expandAll,
+                               pass: .under,
                                engine: engine,
                                offset: offset, zoom: zoom,
                                time: timeline.date.timeIntervalSinceReferenceDate)
                 }
                 nodes
+                // Expanded cards sit above the nodes: a card opened from
+                // a nodule is a transient inspector and must be readable
+                // wherever it lands.
+                CableLayer(document: document,
+                           pending: nil,
+                           selectedCable: selectedCable,
+                           stubOffsets: stubOffsets,
+                           style: cableStyle,
+                           expandedStubs: expandedStubs,
+                           expandAll: expandAll,
+                           pass: .over,
+                           engine: nil,
+                           offset: offset, zoom: zoom,
+                           time: 0)
             }
             .contentShape(Rectangle())
             .gesture(panGesture)
@@ -88,9 +110,25 @@ struct PatchEditorView: View {
             // Single click router for the whole canvas: module under the
             // cursor wins, then cable, then clear. One place decides, so
             // node taps and cable taps can't fight over the selection.
+            // Single click router for the whole canvas, tested in draw
+            // order top-down: expanded cards float above nodes, so their
+            // ✕ and body outrank modules; nodules sit outside module
+            // frames and open their card.
             .onTapGesture { location in
                 let world = toWorld(location)
-                if let module = moduleHit(at: world) {
+                if let key = noduleHit(at: world) {
+                    expandedStubs.insert(key)
+                } else if !expandAll, let key = closeHit(at: world) {
+                    expandedStubs.remove(key)
+                } else if let hit = expandedCardHit(at: world) {
+                    // Second tap on a selected card follows the cable
+                    // to its far end.
+                    if hit.id == selectedCable, let jump = hit.jump {
+                        jumpToWorld(jump)
+                    }
+                    selectedCable = hit.id
+                    selection = nil
+                } else if let module = moduleHit(at: world) {
                     selection = module.id
                     selectedCable = nil
                 } else if let hit = cableHit(at: world) {
@@ -120,6 +158,11 @@ struct PatchEditorView: View {
         .onAppear {
             editorFocused = true
             installEventMonitors()
+        }
+        // Leaving expand-all lands back on nodules everywhere — stale
+        // per-card expansions would reopen cards the user never clicked.
+        .onChange(of: document.isCardLayoutExpanded) { _, expanded in
+            if !expanded { expandedStubs = [] }
         }
         .onDisappear {
             for monitor in [scrollMonitor, keyMonitor].compactMap({ $0 }) {
@@ -152,6 +195,67 @@ struct PatchEditorView: View {
 
     // MARK: - Pages
 
+    /// Faint labeled frame around each page's content, so page
+    /// boundaries read on the single shared canvas. Fitted to the
+    /// union of the page's module rects and its visible connector
+    /// cards, and drawn beneath everything interactive.
+    private var pageFrames: some View {
+        Canvas { context, _ in
+            // Nested funcs are nonisolated; snapshot the view state.
+            let zoom = zoom
+            let offset = offset
+            func toView(_ p: CGPoint) -> CGPoint {
+                CGPoint(x: p.x * zoom + offset.width, y: p.y * zoom + offset.height)
+            }
+            // A visible card belongs to the page of the module whose
+            // port it hangs off, wherever stacking moved it.
+            let connectionByID = Dictionary(
+                uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
+            var cardBoxes: [Int: CGRect] = [:]
+            for item in CableLayer.resolvedStubs(in: document, offsets: stubOffsets,
+                                                 only: visibleCardKeys) {
+                guard let connection = connectionByID[item.key.connection],
+                      let owner = document.module(item.key.isSource
+                          ? connection.sourceModule : connection.destModule)
+                else { continue }
+                cardBoxes[owner.page] = cardBoxes[owner.page].map {
+                    $0.union(item.card)
+                } ?? item.card
+            }
+            for page in 0..<document.pageCount {
+                var box: CGRect?
+                for m in document.modules(onPage: page) {
+                    let r = CGRect(
+                        origin: m.canvasPosition,
+                        size: CGSize(width: NodeMetrics.width,
+                                     height: NodeMetrics.height(
+                                         blockCount: m.activeBlocks(in: document.catalog).count)))
+                    box = box.map { $0.union(r) } ?? r
+                }
+                if let cards = cardBoxes[page] { box = box.map { $0.union(cards) } ?? cards }
+                guard let box else { continue }   // empty page, no frame
+                // Padding covers port nodules and breathing room.
+                let world = box.insetBy(dx: -28, dy: -28)
+                let view = CGRect(origin: toView(world.origin),
+                                  size: CGSize(width: world.width * zoom,
+                                               height: world.height * zoom))
+                let shape = Path(roundedRect: view, cornerRadius: 10 * zoom)
+                context.fill(shape, with: .color(.primary.opacity(0.03)))
+                context.stroke(shape, with: .color(.secondary.opacity(0.35)), lineWidth: 1)
+
+                let name = document.pageName(page)
+                let label = context.resolve(
+                    Text(name.isEmpty ? "Page \(page + 1)" : "\(page + 1) · \(name)")
+                        .font(.system(size: 11 * zoom, weight: .semibold))
+                        .foregroundStyle(.secondary))
+                context.draw(label,
+                             at: CGPoint(x: view.minX + 10 * zoom, y: view.minY - 6 * zoom),
+                             anchor: .bottomLeading)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
     private var pageBar: some View {
         HStack(alignment: .bottom, spacing: 6) {
             ForEach(0..<document.pageCount, id: \.self) { page in
@@ -161,6 +265,17 @@ struct PatchEditorView: View {
                 } label: {
                     VStack(spacing: 2) {
                         pageTile(page)
+                            .overlay(alignment: .topTrailing) {
+                                if let over = document.gridOverflow[page]?.count, over > 0 {
+                                    Text("+\(over)")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 3)
+                                        .background(.red, in: Capsule())
+                                        .offset(x: 4, y: -4)
+                                        .help("\(over) module(s) don't fit this page's 40 buttons")
+                                }
+                            }
                         Text(name.isEmpty ? "\(page + 1)" : "\(page + 1) · \(name)")
                             .font(.system(size: 9))
                             .lineLimit(1)
@@ -207,14 +322,12 @@ struct PatchEditorView: View {
 
     /// The page band nearest the viewport's left edge — highlight only.
     private var currentPage: Int {
-        let page = Int(((-offset.width / zoom + PatchDocument.pageStride / 2)
-                        / PatchDocument.pageStride).rounded(.down))
-        return min(max(page, 0), document.pageCount - 1)
+        document.page(forX: -offset.width / zoom + PatchDocument.pageStride / 2)
     }
 
     private func jump(to page: Int) {
         withAnimation(.easeInOut(duration: 0.25)) {
-            offset.width = 40 * zoom - CGFloat(page) * PatchDocument.pageStride * zoom
+            offset.width = (40 - document.pageOriginX(page)) * zoom
         }
         panStart = offset
     }
@@ -397,10 +510,44 @@ struct PatchEditorView: View {
             }
     }
 
-    /// The topmost connector card under a world point.
+    /// Connector ends currently shown as cards; nil means all of them.
+    private var visibleCardKeys: Set<CableLayer.StubKey>? {
+        expandAll ? nil : expandedStubs
+    }
+
+    /// The topmost expanded connector card under a world point.
     private func stubCardHit(at world: CGPoint) -> CableLayer.StubKey? {
-        CableLayer.resolvedStubs(in: document, offsets: stubOffsets)
+        CableLayer.resolvedStubs(in: document, offsets: stubOffsets,
+                                 only: visibleCardKeys)
             .last { $0.card.contains(world) }?.key
+    }
+
+    /// The topmost collapsed nodule near a world point.
+    private func noduleHit(at world: CGPoint) -> CableLayer.StubKey? {
+        guard !expandAll else { return nil }
+        return CableLayer.resolvedStubs(in: document, offsets: stubOffsets)
+            .filter { !expandedStubs.contains($0.key) }
+            .last {
+                let center = CableLayer.noduleCenter($0.stub)
+                return hypot(center.x - world.x, center.y - world.y)
+                    <= CableLayer.noduleRadius + 4
+            }?.key
+    }
+
+    /// The ✕ of an expanded card under a world point.
+    private func closeHit(at world: CGPoint) -> CableLayer.StubKey? {
+        CableLayer.resolvedStubs(in: document, offsets: stubOffsets,
+                                 only: visibleCardKeys)
+            .last { CableLayer.closeRect(for: $0.card).contains(world) }?.key
+    }
+
+    /// An expanded card's body under a world point, with the jump
+    /// target its second click follows.
+    private func expandedCardHit(at world: CGPoint) -> (id: UUID, jump: CGPoint?)? {
+        CableLayer.resolvedStubs(in: document, offsets: stubOffsets,
+                                 only: visibleCardKeys)
+            .last { $0.card.contains(world) }
+            .map { ($0.key.connection, $0.stub.jumpTarget) }
     }
 
     /// One gesture per node: starting near a port drags a cable; anywhere
@@ -433,6 +580,9 @@ struct PatchEditorView: View {
                     }
                     pendingCable = nil
                 }
+                // A finished node drag may have widened (or narrowed)
+                // its page; later pages slide to fit.
+                if draggedModule != nil { document.resolvePageBoundaries() }
                 draggedModule = nil
             }
     }
@@ -553,7 +703,8 @@ struct PatchEditorView: View {
                 }
             }
         }
-        for item in CableLayer.resolvedStubs(in: document, offsets: stubOffsets) {
+        for item in CableLayer.resolvedStubs(in: document, offsets: stubOffsets,
+                                             only: visibleCardKeys) {
             if item.card.contains(world) {
                 consider(item.key.connection, 0, item.stub.jumpTarget)
                 continue
@@ -644,6 +795,14 @@ struct CableLayer: View {
     /// connector end; editor state, never persisted to the patch.
     let stubOffsets: [StubKey: CGSize]
     let style: CableStyle
+    /// Which connector ends show a full card; everything else draws as
+    /// a port nodule. `expandAll` overrides the set.
+    let expandedStubs: Set<StubKey>
+    let expandAll: Bool
+    /// Split so expanded cards can render above module nodes while
+    /// cables, stub lines, and nodules stay beneath them.
+    enum Pass { case under, over }
+    let pass: Pass
     /// Live engine for per-lane activity. Nil draws plain cables.
     let engine: AudioEngine?
     let offset: CGSize
@@ -662,6 +821,21 @@ struct CableLayer: View {
         let levels = (engine?.isRunning ?? false)
             ? (engine?.sourceLevels(sources) ?? []) : []
         return Canvas { context, _ in
+            if pass == .over {
+                let connectionByID = Dictionary(
+                    uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
+                for item in Self.resolvedStubs(
+                    in: document, offsets: stubOffsets,
+                    only: expandAll ? nil : expandedStubs) {
+                    guard let connection = connectionByID[item.key.connection]
+                    else { continue }
+                    drawStubCard(item, in: &context,
+                                 color: cableColor(connection),
+                                 selected: connection.id == selectedCable,
+                                 showClose: !expandAll)
+                }
+                return
+            }
             for (index, connection) in document.connections.enumerated() {
                 guard let geometry = Self.geometry(connection, in: document) else { continue }
                 let color = cableColor(connection)
@@ -704,23 +878,29 @@ struct CableLayer: View {
                     break   // drawn from resolvedStubs below, post-stacking
                 }
             }
-            // Two passes so every card renders above every stub line —
-            // one pass would let a later connector's line cross an
-            // earlier connector's card.
+            // Expanded ends draw a stub line here and their card in the
+            // `over` pass (above module nodes); collapsed ends draw only
+            // a nodule at the port. Card resolution is limited to the
+            // expanded set so hidden cards never shift visible ones.
             let connectionByID = Dictionary(
                 uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
-            let stubItems = Self.resolvedStubs(in: document, offsets: stubOffsets)
-            for item in stubItems {
+            let visibleKeys: Set<StubKey>? = expandAll ? nil : expandedStubs
+            for item in Self.resolvedStubs(in: document, offsets: stubOffsets,
+                                           only: visibleKeys) {
                 guard let connection = connectionByID[item.key.connection] else { continue }
                 drawStubLine(item, in: &context,
                              color: cableColor(connection),
                              selected: connection.id == selectedCable)
             }
-            for item in stubItems {
-                guard let connection = connectionByID[item.key.connection] else { continue }
-                drawStubCard(item, in: &context,
-                             color: cableColor(connection),
-                             selected: connection.id == selectedCable)
+            if !expandAll {
+                for item in Self.resolvedStubs(in: document, offsets: stubOffsets)
+                where !expandedStubs.contains(item.key) {
+                    guard let connection = connectionByID[item.key.connection]
+                    else { continue }
+                    drawNodule(item, in: &context,
+                               color: cableColor(connection),
+                               selected: connection.id == selectedCable)
+                }
             }
             if let pending {
                 let path: Path = switch style {
@@ -803,21 +983,26 @@ struct CableLayer: View {
 
     static let cardSize = CGSize(width: 214, height: 56)
 
+    /// `only` limits resolution (and therefore stacking) to the given
+    /// connector ends — collapsed nodules must not push visible cards
+    /// around, so callers pass the expanded set; nil resolves all.
     static func resolvedStubs(in document: PatchDocument,
-                              offsets: [StubKey: CGSize]) -> [ResolvedStub] {
+                              offsets: [StubKey: CGSize],
+                              only keys: Set<StubKey>? = nil) -> [ResolvedStub] {
         var items: [ResolvedStub] = []
         for connection in document.connections {
             guard case .offPage(let source, let dest)? = geometry(connection, in: document)
             else { continue }
             for (stub, isSource) in [(source, true), (dest, false)] {
+                let key = StubKey(connection: connection.id, isSource: isSource)
+                if let keys, !keys.contains(key) { continue }
                 let rightward = stub.tip.x >= stub.port.x
                 let card = CGRect(
                     x: rightward ? stub.tip.x : stub.tip.x - cardSize.width,
                     y: stub.tip.y - cardSize.height / 2,
                     width: cardSize.width, height: cardSize.height)
                 items.append(ResolvedStub(
-                    key: StubKey(connection: connection.id, isSource: isSource),
-                    stub: stub, card: card, rightward: rightward))
+                    key: key, stub: stub, card: card, rightward: rightward))
             }
         }
         // Stack cards that share a column and direction so none overlap:
@@ -1065,13 +1250,44 @@ struct CableLayer: View {
         }
     }
 
+    /// Where a collapsed connector end shows its nodule: just off the
+    /// module edge at the port row, on the side the card would open.
+    static func noduleCenter(_ stub: Stub) -> CGPoint {
+        let sign: CGFloat = stub.tip.x >= stub.port.x ? 1 : -1
+        return CGPoint(x: stub.port.x + sign * noduleOffset, y: stub.port.y)
+    }
+    static let noduleOffset: CGFloat = 12
+    static let noduleRadius: CGFloat = 7
+
+    /// The ✕ region of an expanded card, in world coordinates.
+    static func closeRect(for card: CGRect) -> CGRect {
+        CGRect(x: card.maxX - 18, y: card.minY + 4, width: 14, height: 14)
+    }
+
+    /// A collapsed off-page connector end: a dot in the far module's
+    /// color (matching its LED in the minimap and card tiles), ringed
+    /// in the cable's signal color. Clicking it opens the full card.
+    private func drawNodule(_ item: CableLayer.ResolvedStub,
+                            in context: inout GraphicsContext,
+                            color: Color, selected: Bool) {
+        let center = transform(Self.noduleCenter(item.stub))
+        let r = Self.noduleRadius * zoom
+        let circle = Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r,
+                                            width: 2 * r, height: 2 * r))
+        let farColor = document.module(item.stub.farModuleID).map { zoiaColor($0.colorID) }
+            ?? .gray
+        context.fill(circle, with: .color(farColor))
+        context.stroke(circle, with: .color(selected ? .white : color),
+                       lineWidth: (selected ? 2 : 1.2) * zoom)
+    }
+
     /// An off-page connector's card: the far page's LED grid with the
     /// far module lit bright and everything else dimmed, the page name,
     /// and the far module · port. The grid mirrors the page bar's
     /// minimap so the two views cross-reference.
     private func drawStubCard(_ item: CableLayer.ResolvedStub,
                               in context: inout GraphicsContext,
-                              color: Color, selected: Bool) {
+                              color: Color, selected: Bool, showClose: Bool) {
         let stub = item.stub
         let card = CGRect(
             origin: transform(item.card.origin),
@@ -1108,6 +1324,21 @@ struct CableLayer: View {
                      anchor: .leading)
         context.draw(subtitle, at: CGPoint(x: textX, y: card.minY + 37 * zoom),
                      anchor: .leading)
+
+        if showClose {
+            let world = Self.closeRect(for: item.card)
+            let box = CGRect(origin: transform(world.origin),
+                             size: CGSize(width: world.width * zoom,
+                                          height: world.height * zoom))
+            var cross = Path()
+            let inset = box.insetBy(dx: 4 * zoom, dy: 4 * zoom)
+            cross.move(to: CGPoint(x: inset.minX, y: inset.minY))
+            cross.addLine(to: CGPoint(x: inset.maxX, y: inset.maxY))
+            cross.move(to: CGPoint(x: inset.maxX, y: inset.minY))
+            cross.addLine(to: CGPoint(x: inset.minX, y: inset.maxY))
+            context.stroke(cross, with: .color(.secondary),
+                           style: StrokeStyle(lineWidth: 1.2 * zoom, lineCap: .round))
+        }
     }
 
     private func clipped(_ text: String, to limit: Int) -> String {

@@ -52,7 +52,7 @@ private final class InterfaceMidiRecorder: MidiPort {
 
     @Test func pushbuttonMomentaryRespectsNormally() throws {
         let document = try makeDocument()
-        let normal = try #require(document.addModule(typeID: 15, at: .zero))
+        _ = try #require(document.addModule(typeID: 15, at: .zero))   // "normally zero"
         let inverted = try #require(document.addModule(typeID: 15, at: .zero))
         document.setOption(inverted.id, optionIndex: 1, byte: 1)  // normally one
         let runtime = PatchRuntime(document: document, sampleRate: 48000)
@@ -421,7 +421,7 @@ private final class InterfaceMidiRecorder: MidiPort {
         let document = try makeDocument()
         let euroIn = try #require(document.addModule(typeID: 93, at: .zero))
         document.setOption(euroIn.id, optionIndex: 0, byte: 2)  // no pad
-        let padded = try #require(document.addModule(typeID: 93, at: .zero))  // 6 dB pad
+        _ = try #require(document.addModule(typeID: 93, at: .zero))  // 6 dB pad
         let euroOut = try #require(document.addModule(typeID: 96, at: .zero))  // right
         document.connect(
             from: PortRef(module: euroIn.id, blockPosition: 0, type: .audioOut),

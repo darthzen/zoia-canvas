@@ -17,6 +17,7 @@ struct InspectorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     header(index: index, spec: spec)
+                    gridSection(index: index)
                     optionsSection(index: index, spec: spec)
                     paramsSection(index: index)
                 }
@@ -60,6 +61,71 @@ struct InspectorView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The module's page as the pedal shows it: 8×5 buttons, every
+    /// module in its live grid slot. Clicking a button moves this
+    /// module there and pins it; the rest of the page reflows around
+    /// it. Unpin hands the slot back to automatic flow placement.
+    private func gridSection(index: Int) -> some View {
+        let module = document.modules[index]
+        let span = document.buttonSpan(module)
+        let occupants = document.modules(onPage: module.page)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Grid").font(.subheadline.bold())
+                if module.gridPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .help("Pinned — reflow keeps this placement")
+                    Button("Unpin") { document.unpinGridPosition(moduleID) }
+                        .font(.caption)
+                        .buttonStyle(.link)
+                }
+                Spacer()
+                Text("\(span) button\(span == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            gridButtons(module: module, span: span, occupants: occupants)
+            if document.gridOverflow[module.page] != nil {
+                Text("Page over 40 buttons — export is blocked")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func gridButtons(module: CanvasModule, span: Int,
+                             occupants: [CanvasModule]) -> some View {
+        let colorAt: [Int: Color] = occupants.reduce(into: [:]) { map, m in
+            let mSpan = document.buttonSpan(m)
+            for b in m.gridPosition..<(m.gridPosition + mSpan)
+            where b < PatchDocument.pageButtonCount {
+                map[b] = zoiaColor(m.colorID).opacity(m.id == module.id ? 1 : 0.35)
+            }
+        }
+        let mine = Set(module.gridPosition..<(module.gridPosition + span))
+        return Grid(horizontalSpacing: 3, verticalSpacing: 3) {
+            ForEach(0..<5, id: \.self) { row in
+                GridRow {
+                    ForEach(0..<8, id: \.self) { col in
+                        let cell = row * 8 + col
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(colorAt[cell] ?? Color.primary.opacity(0.08))
+                            .overlay(RoundedRectangle(cornerRadius: 3)
+                                .strokeBorder(mine.contains(cell) ? Color.accentColor : .clear,
+                                              lineWidth: 1.5))
+                            .frame(width: 22, height: 16)
+                            .onTapGesture {
+                                document.setGridPosition(moduleID, to: cell)
+                            }
+                    }
+                }
+            }
+        }
+        .help("Click a button to pin \(module.customName.isEmpty ? "this module" : module.customName) there")
     }
 
     @ViewBuilder

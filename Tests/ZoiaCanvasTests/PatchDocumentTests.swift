@@ -145,9 +145,10 @@ private final class CorpusLocator {}
                                    size: CGSize(width: NodeMetrics.width, height: height)))
         }
         for (page, rect) in placed {
-            let band = CGRect(x: CGFloat(page) * PatchDocument.pageStride, y: 0,
-                              width: PatchDocument.pageStride, height: 1_000_000)
-            #expect(band.contains(rect), "node escapes its page band")
+            let start = document.pageOriginX(page)
+            let end = document.pageOriginX(page + 1)
+            #expect(rect.minX >= start && rect.maxX <= end,
+                    "node escapes its page band")
         }
         for i in placed.indices {
             for j in placed.indices where j > i {
@@ -155,6 +156,35 @@ private final class CorpusLocator {}
                         "modules \(i) and \(j) overlap")
             }
         }
+    }
+
+    /// A page whose content grows past its band pushes every later
+    /// page right; pulling the content back closes the gap again.
+    @Test func pageBoundariesSlideWithContent() throws {
+        let document = PatchDocument(catalog: try catalog())
+        let wide = try #require(document.addModule(typeID: 0, at: CGPoint(x: 100, y: 100)))
+        document.addPage()
+        let other = try #require(document.addModule(typeID: 1, at: CGPoint(x: 100, y: 100)))
+        document.moveModule(other.id, toPage: 1)
+        let homeX = try #require(document.module(other.id)).canvasPosition.x
+
+        // Drag the page-0 module far right (the editor normalizes on
+        // drag end), past where page 1 used to start.
+        let index = try #require(document.modules.firstIndex { $0.id == wide.id })
+        document.modules[index].canvasPosition.x = PatchDocument.pageStride + 500
+        document.resolvePageBoundaries()
+        let pushed = try #require(document.module(other.id)).canvasPosition.x
+        #expect(document.pageOriginX(1) > PatchDocument.pageStride,
+                "page 1 origin slides right")
+        #expect(pushed > homeX, "page 1 content slides with its origin")
+        #expect(pushed >= document.pageOriginX(1), "content stays inside its band")
+
+        // Drag it back; everything closes up to the minimum stride.
+        document.modules[index].canvasPosition.x = 100
+        document.resolvePageBoundaries()
+        #expect(document.pageOriginX(1) == PatchDocument.pageStride)
+        let restored = try #require(document.module(other.id)).canvasPosition.x
+        #expect(restored == homeX, "relative position survives the round trip")
     }
 
     /// Loading a factory patch into the document and rebuilding must

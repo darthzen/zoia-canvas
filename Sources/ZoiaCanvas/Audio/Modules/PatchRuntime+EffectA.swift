@@ -295,8 +295,8 @@ extension PatchRuntime {
         // Q = 10^(3·cv) per the dial marks, capped for float stability.
         let q = min(max(pow(10, Double(max(0, cvIn(node: index, block: 5))) * 3), 0.5), 25)
         let k = Float(1 / q)
-        var left = audioIn(node: index, block: 0, frames: frames)
-        var right = stereo ? audioIn(node: index, block: 1, frames: frames) : []
+        let left = audioIn(node: index, block: 0, frames: frames)
+        let right = stereo ? audioIn(node: index, block: 1, frames: frames) : []
         // Assumption: envelope ballistics 3 ms rise / 200 ms fall, and the
         // sweep amount is min(1, envelope × sensitivity × 4) — full-scale
         // audio at sensitivity ≥ 0.3 reaches the top of the sweep.

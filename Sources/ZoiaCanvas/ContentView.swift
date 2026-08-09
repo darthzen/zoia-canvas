@@ -82,7 +82,7 @@ struct ContentView: View {
         // file-URL handler.
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
-            _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                 guard let data = item as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 Task { @MainActor in openBin(at: url) }
@@ -93,6 +93,16 @@ struct ContentView: View {
             ToolbarItemGroup {
                 DSPMeter(total: document.dspTotal)
                 cableStylePicker
+                // Expanded layout re-packs the canvas with room for every
+                // connector card; toggling back restores the arrangement.
+                Toggle(isOn: .init(
+                    get: { document.isCardLayoutExpanded },
+                    set: { $0 ? document.applyExpandedCardLayout()
+                              : document.restoreCollapsedCardLayout() })) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .help("Expand all connector cards")
+                }
+                .toggleStyle(.button)
                 inputSourceMenu
                 Button(engine.isRunning ? "Stop" : "Play",
                        systemImage: engine.isRunning ? "stop.fill" : "play.fill") {
@@ -166,6 +176,13 @@ struct ContentView: View {
     }
 
     private func exportBin(_ document: PatchDocument) {
+        // buildPatch writes grid positions verbatim; a page over its 40
+        // buttons would put modules on top of each other on the pedal.
+        let blockers = document.gridExportBlockers
+        guard blockers.isEmpty else {
+            loadError = "Cannot export.\n" + blockers.joined(separator: "\n")
+            return
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
         panel.nameFieldStringValue = "\(document.patchName.isEmpty ? "patch" : document.patchName).bin"
