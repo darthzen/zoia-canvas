@@ -29,9 +29,12 @@ struct PatchEditorView: View {
         GeometryReader { _ in
             ZStack(alignment: .topLeading) {
                 DotGridBackground(offset: offset, zoom: zoom)
-                CableLayer(document: document,
-                           pending: pendingCableSegments(),
-                           offset: offset, zoom: zoom)
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                    CableLayer(document: document,
+                               pending: pendingCableSegments(),
+                               offset: offset, zoom: zoom,
+                               time: timeline.date.timeIntervalSinceReferenceDate)
+                }
                 nodes
             }
             .contentShape(Rectangle())
@@ -190,13 +193,35 @@ struct CableLayer: View {
     let pending: Pending?
     let offset: CGSize
     let zoom: CGFloat
+    /// Drives the flow animation; connection strength scales its speed and
+    /// brightness. When the audio engine exists this will modulate off live
+    /// signal instead.
+    let time: TimeInterval
 
     var body: some View {
         Canvas { context, _ in
             for connection in document.connections {
                 guard let path = cablePath(connection) else { continue }
-                context.stroke(path, with: .color(cableColor(connection)),
-                               lineWidth: 2 * zoom)
+                let color = cableColor(connection)
+                let strength = min(max(Double(connection.strengthRaw) / 10000, 0), 1)
+
+                // Glow underlay, then the cable body.
+                context.stroke(path, with: .color(color.opacity(0.25)),
+                               style: StrokeStyle(lineWidth: 6 * zoom, lineCap: .round))
+                context.stroke(path, with: .color(color),
+                               style: StrokeStyle(lineWidth: 2 * zoom, lineCap: .round))
+
+                // Bespoke-style energy flow: bright dashes marching from
+                // output to input. Phase decreases so motion runs with the
+                // path direction (source → destination).
+                let speed = (40 + 80 * strength) * zoom
+                context.stroke(
+                    path,
+                    with: .color(.white.opacity(0.25 + 0.5 * strength)),
+                    style: StrokeStyle(
+                        lineWidth: 2.2 * zoom, lineCap: .round,
+                        dash: [3 * zoom, 13 * zoom],
+                        dashPhase: -CGFloat(time.truncatingRemainder(dividingBy: 3600)) * speed))
             }
             if let pending {
                 let path = bezier(from: transform(pending.from), to: transform(pending.to))
@@ -205,8 +230,11 @@ struct CableLayer: View {
                 case .allowedTypeMismatch: .yellow
                 case .notOutputToInput, .sameModule, .duplicate: .red
                 }
-                context.stroke(path, with: .color(color.opacity(0.9)),
-                               style: StrokeStyle(lineWidth: 2 * zoom, dash: [6, 4]))
+                context.stroke(
+                    path, with: .color(color.opacity(0.9)),
+                    style: StrokeStyle(
+                        lineWidth: 2 * zoom, dash: [6 * zoom, 4 * zoom],
+                        dashPhase: -CGFloat(time.truncatingRemainder(dividingBy: 3600)) * 60 * zoom))
             }
         }
         .allowsHitTesting(false)
