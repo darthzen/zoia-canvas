@@ -18,6 +18,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.theashfords.ZoiaCanvas
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSMainStoryboardFile: ""
+        # Live play-through taps the input device; macOS requires a usage
+        # string before granting microphone access. The target is not
+        # sandboxed (no entitlements configured), so no
+        # com.apple.security.device.audio-input entitlement is needed.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "ZoiaCanvas routes live audio input through your patch's Audio Input modules."
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
