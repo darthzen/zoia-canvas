@@ -24,6 +24,9 @@ struct PatchEditorView: View {
     @State private var zoom: CGFloat = 1.0
     @State private var pendingCable: PendingCable?
     @State private var draggedModule: (id: UUID, start: CGPoint)?
+    @State private var selectedCable: UUID?
+    @State private var renamingPage: Int?
+    @State private var renameText = ""
 
     var body: some View {
         GeometryReader { _ in
@@ -32,6 +35,7 @@ struct PatchEditorView: View {
                 TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
                     CableLayer(document: document,
                                pending: pendingCableSegments(),
+                               selectedCable: selectedCable,
                                offset: offset, zoom: zoom,
                                time: timeline.date.timeIntervalSinceReferenceDate)
                 }
@@ -40,17 +44,88 @@ struct PatchEditorView: View {
             .contentShape(Rectangle())
             .gesture(panGesture)
             .gesture(MagnifyGesture().onChanged { zoom = min(max($0.magnification, 0.25), 3) })
-            .onTapGesture { selection = nil }
+            .onTapGesture { location in
+                selection = nil
+                selectedCable = cableHit(at: toWorld(location))
+            }
             .onDrop(of: [.plainText], isTargeted: nil) { providers, location in
                 dropModule(providers: providers, at: toWorld(location))
             }
         }
         .onDeleteCommand {
-            if let selected = selection {
+            if let cable = selectedCable {
+                document.removeConnection(cable)
+                selectedCable = nil
+            } else if let selected = selection {
                 document.removeModule(selected)
                 selection = nil
             }
         }
+        .overlay(alignment: .bottom) { pageBar }
+        .alert("Rename page \((renamingPage ?? 0) + 1)",
+               isPresented: .init(get: { renamingPage != nil },
+                                  set: { if !$0 { renamingPage = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let page = renamingPage { document.renamePage(page, to: renameText) }
+                renamingPage = nil
+            }
+            Button("Cancel", role: .cancel) { renamingPage = nil }
+        }
+    }
+
+    // MARK: - Pages
+
+    private var pageBar: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<document.pageCount, id: \.self) { page in
+                let name = document.pageName(page)
+                Button {
+                    jump(to: page)
+                } label: {
+                    Text(name.isEmpty ? "\(page + 1)" : "\(page + 1) · \(name)")
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(currentPage == page ? Color.accentColor.opacity(0.3) : .clear,
+                                    in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Rename…") {
+                        renameText = name
+                        renamingPage = page
+                    }
+                    Button("Delete", role: .destructive) { document.removePage(page) }
+                        .disabled(!document.modules(onPage: page).isEmpty
+                                  || document.pageCount == 1)
+                }
+            }
+            Button {
+                if let added = document.addPage() { jump(to: added) }
+            } label: {
+                Image(systemName: "plus").font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .help("Add page")
+        }
+        .padding(6)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.bottom, 10)
+    }
+
+    /// The page band nearest the viewport's left edge — highlight only.
+    private var currentPage: Int {
+        let page = Int(((-offset.width / zoom + PatchDocument.pageStride / 2)
+                        / PatchDocument.pageStride).rounded(.down))
+        return min(max(page, 0), document.pageCount - 1)
+    }
+
+    private func jump(to page: Int) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            offset.width = 40 * zoom - CGFloat(page) * PatchDocument.pageStride * zoom
+        }
+        panStart = offset
     }
 
     private var nodes: some View {
@@ -63,7 +138,10 @@ struct PatchEditorView: View {
                 isSelected: selection == module.id)
             .scaleEffect(zoom, anchor: .topLeading)
             .position(nodeCenter(module, blockCount: blocks.count))
-            .onTapGesture { selection = module.id }
+            .onTapGesture {
+                selection = module.id
+                selectedCable = nil
+            }
             .gesture(nodeGesture(module, blocks: blocks))
         }
     }
@@ -129,6 +207,7 @@ struct PatchEditorView: View {
                 } else {
                     draggedModule = (module.id, module.canvasPosition)
                     selection = module.id
+                    selectedCable = nil
                 }
                 updateActiveDrag(value)
             }
@@ -198,6 +277,35 @@ struct PatchEditorView: View {
             from: pending.sourceAnchor, to: pending.current,
             isAudio: pending.source.type.isAudio, ruling: pending.ruling)
     }
+
+    // MARK: - Cable hit testing (world coordinates)
+
+    /// The cable nearest the tap, within a constant ~12pt screen radius.
+    /// Distance to a cable is the minimum over sampled points of its
+    /// bezier — cheap, runs only on tap, and 24 samples stay well inside
+    /// the radius for the curvature these cables can reach.
+    private func cableHit(at world: CGPoint) -> UUID? {
+        let radius = 12 / zoom
+        var best: (id: UUID, distance: CGFloat)?
+        for connection in document.connections {
+            guard let (from, to) = CableLayer.worldEndpoints(connection, in: document)
+            else { continue }
+            let dx = max(abs(to.x - from.x) * 0.5, 30)
+            let c1 = CGPoint(x: from.x + dx, y: from.y)
+            let c2 = CGPoint(x: to.x - dx, y: to.y)
+            for i in 0...24 {
+                let t = CGFloat(i) / 24
+                let u = 1 - t
+                let x = u * u * u * from.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * to.x
+                let y = u * u * u * from.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * to.y
+                let distance = hypot(x - world.x, y - world.y)
+                if distance <= radius, distance < (best?.distance ?? .infinity) {
+                    best = (connection.id, distance)
+                }
+            }
+        }
+        return best?.id
+    }
 }
 
 /// Draws every cable plus the in-progress drag, in one Canvas pass.
@@ -211,6 +319,7 @@ struct CableLayer: View {
 
     let document: PatchDocument
     let pending: Pending?
+    let selectedCable: UUID?
     let offset: CGSize
     let zoom: CGFloat
     /// Drives the flow animation; connection strength scales its speed and
@@ -225,6 +334,11 @@ struct CableLayer: View {
                 let color = cableColor(connection)
                 let strength = min(max(Double(connection.strengthRaw) / 10000, 0), 1)
 
+                // Selection halo under everything else on the cable.
+                if connection.id == selectedCable {
+                    context.stroke(path, with: .color(.white.opacity(0.9)),
+                                   style: StrokeStyle(lineWidth: 5 * zoom, lineCap: .round))
+                }
                 // Glow underlay, then the cable body.
                 context.stroke(path, with: .color(color.opacity(0.25)),
                                style: StrokeStyle(lineWidth: 6 * zoom, lineCap: .round))
@@ -264,22 +378,29 @@ struct CableLayer: View {
         CGPoint(x: world.x * zoom + offset.width, y: world.y * zoom + offset.height)
     }
 
-    private func anchor(module: CanvasModule, blockPosition: Int, wantOutput: Bool) -> CGPoint? {
-        let blocks = module.activeBlocks(in: document.catalog)
-        for (row, block) in blocks.enumerated()
-        where (block.position ?? row) == blockPosition && block.type.isOutput == wantOutput {
-            return NodeMetrics.portAnchor(
-                nodeOrigin: module.canvasPosition, rowIndex: row, isOutput: wantOutput)
+    /// Both cable endpoints in world coordinates — shared with the
+    /// editor's cable hit testing so selection and drawing agree.
+    static func worldEndpoints(_ connection: CanvasConnection,
+                               in document: PatchDocument) -> (from: CGPoint, to: CGPoint)? {
+        func anchor(module: CanvasModule, blockPosition: Int, wantOutput: Bool) -> CGPoint? {
+            let blocks = module.activeBlocks(in: document.catalog)
+            for (row, block) in blocks.enumerated()
+            where (block.position ?? row) == blockPosition && block.type.isOutput == wantOutput {
+                return NodeMetrics.portAnchor(
+                    nodeOrigin: module.canvasPosition, rowIndex: row, isOutput: wantOutput)
+            }
+            return nil
         }
-        return nil
-    }
-
-    private func cablePath(_ connection: CanvasConnection) -> Path? {
         guard let source = document.module(connection.sourceModule),
               let dest = document.module(connection.destModule),
               let from = anchor(module: source, blockPosition: connection.sourceBlock, wantOutput: true),
               let to = anchor(module: dest, blockPosition: connection.destBlock, wantOutput: false)
         else { return nil }
+        return (from, to)
+    }
+
+    private func cablePath(_ connection: CanvasConnection) -> Path? {
+        guard let (from, to) = Self.worldEndpoints(connection, in: document) else { return nil }
         return bezier(from: transform(from), to: transform(to))
     }
 

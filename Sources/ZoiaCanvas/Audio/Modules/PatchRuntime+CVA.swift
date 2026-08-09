@@ -86,11 +86,15 @@ extension PatchRuntime {
         }
 
         // Track 1 = step params, CV-modulatable per the catalog doc
-        // ("the first track can have each step controlled by CV").
-        // Tracks 2+ live in saved_data, not yet decoded: they output 0.
+        // ("the first track can have each step controlled by CV") — not
+        // the matrix's row 0, which is stale in 21 of 77 factory
+        // instances. Tracks 2+ have no params; their rows in the
+        // saved_data step matrix are the only storage.
         let stepValue = cvIn(node: index, block: node.step)
         for track in 0..<tracks {
-            node.cvOut[36 + track] = track == 0 ? stepValue : 0
+            node.cvOut[36 + track] = track == 0
+                ? stepValue
+                : SequencerSavedData.step(node.savedData, track: track, step: node.step) ?? 0
         }
     }
 

@@ -42,6 +42,15 @@ struct InspectorView: View {
                     .tag(code)
                 }
             }
+            Picker("Page", selection: Binding(
+                get: { document.modules[index].page },
+                set: { document.moveModule(moduleID, toPage: $0) })) {
+                ForEach(0..<document.pageCount, id: \.self) { page in
+                    let name = document.pageName(page)
+                    Text(name.isEmpty ? "Page \(page + 1)" : "\(page + 1) · \(name)")
+                        .tag(page)
+                }
+            }
             if let doc = spec.doc {
                 Text(doc.description)
                     .font(.caption)

@@ -145,6 +145,12 @@ final class PatchDocument {
         structureRevision += 1
     }
 
+    func removeConnection(_ id: UUID) {
+        guard connections.contains(where: { $0.id == id }) else { return }
+        connections.removeAll { $0.id == id }
+        structureRevision += 1
+    }
+
     func ruling(from source: PortRef, to dest: PortRef) -> ConnectionRuling {
         guard source.type.isOutput, !dest.type.isOutput else { return .notOutputToInput }
         guard source.module != dest.module else { return .sameModule }
@@ -177,6 +183,69 @@ final class PatchDocument {
         modules.first { $0.id == id }
     }
 
+    // MARK: - Pages
+    //
+    // Pages are device-UI structure (8×5 grid views); the canvas shows
+    // them as horizontal bands one `pageStride` apart. None of these
+    // operations touch the runtime graph, so none bump structureRevision.
+
+    /// Canvas x-distance between consecutive page bands.
+    static let pageStride: CGFloat = 8 * 190
+
+    /// Pages that exist: named ones plus any page a module sits on;
+    /// never less than one.
+    var pageCount: Int {
+        max(pageNames.count, (modules.map(\.page).max() ?? -1) + 1, 1)
+    }
+
+    func pageName(_ index: Int) -> String {
+        index < pageNames.count ? pageNames[index] : ""
+    }
+
+    func modules(onPage index: Int) -> [CanvasModule] {
+        modules.filter { $0.page == index }
+    }
+
+    func renamePage(_ index: Int, to name: String) {
+        guard index >= 0, index < pageCount else { return }
+        while pageNames.count <= index { pageNames.append("") }
+        // The wire format stores 16 ASCII bytes.
+        pageNames[index] = String(name.unicodeScalars.filter(\.isASCII).prefix(16))
+    }
+
+    @discardableResult
+    func addPage() -> Int? {
+        let index = pageCount
+        guard index < ZoiaPatchBinary.maxPages else { return nil }
+        while pageNames.count <= index { pageNames.append("") }
+        return index
+    }
+
+    /// Removes an empty page; later pages shift down and their modules'
+    /// canvas bands follow. Occupied pages and the last page stay.
+    @discardableResult
+    func removePage(_ index: Int) -> Bool {
+        guard index >= 0, index < pageCount, pageCount > 1,
+              modules(onPage: index).isEmpty else { return false }
+        if index < pageNames.count { pageNames.remove(at: index) }
+        for i in modules.indices where modules[i].page > index {
+            modules[i].page -= 1
+            modules[i].canvasPosition.x -= Self.pageStride
+        }
+        return true
+    }
+
+    /// Reassigns a module's page, shifting its canvas position into the
+    /// destination band.
+    func moveModule(_ id: UUID, toPage page: Int) {
+        guard let index = modules.firstIndex(where: { $0.id == id }),
+              page >= 0, page < ZoiaPatchBinary.maxPages,
+              page != modules[index].page else { return }
+        let delta = page - modules[index].page
+        modules[index].page = page
+        modules[index].canvasPosition.x += CGFloat(delta) * Self.pageStride
+    }
+
     // MARK: - .bin bridge
 
     /// Canvas spacing for modules laid out from a device patch, grouped by
@@ -185,7 +254,7 @@ final class PatchDocument {
         let column = gridPosition % 8
         let row = gridPosition / 8
         return CGPoint(
-            x: 80 + CGFloat(column) * 190 + CGFloat(page) * 8 * 190,
+            x: 80 + CGFloat(column) * 190 + CGFloat(page) * pageStride,
             y: 80 + CGFloat(row) * 150)
     }
 

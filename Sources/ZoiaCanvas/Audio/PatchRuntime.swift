@@ -13,8 +13,8 @@ import Foundation
 /// - Pitch CV: fraction × 127 = MIDI note; Hz = 440 × 2^((n−69)/12).
 ///   (Assumption: matches the community 0…1 ≙ 0…127 mapping.)
 /// - Sequencer: track 1 reads step values from params (verified against
-///   factory patches); tracks 2+ live in saved_data whose layout is not
-///   yet decoded — they output 0 and that limitation is deliberate.
+///   factory patches); tracks 2+ read the saved_data step matrix — see
+///   SequencerSavedData for the decoded layout and its evidence.
 ///
 /// Module implementations live in per-group extension files
 /// (PatchRuntime+Interface, +CVA, +CVB, +AudioA, +AudioB, +Analysis,
@@ -46,6 +46,9 @@ final class PatchRuntime {
         var params: [Float]
         /// Param block position → param array index.
         let paramIndexByPosition: [Int: Int]
+        /// Module-specific stored state, raw as decoded from the file
+        /// (sequencer step matrix, sampler buffers …).
+        let savedData: Data
         var cvOut: [Int: Float] = [:]
         var audioOut: [Int: [Float]] = [:]
 
@@ -71,11 +74,12 @@ final class PatchRuntime {
         }
 
         init(typeID: Int, options: [OptionValue], params: [Float],
-             paramIndexByPosition: [Int: Int]) {
+             paramIndexByPosition: [Int: Int], savedData: Data) {
             self.typeID = typeID
             self.options = options
             self.params = params
             self.paramIndexByPosition = paramIndexByPosition
+            self.savedData = savedData
         }
 
         func optionText(_ index: Int) -> String {
@@ -114,7 +118,8 @@ final class PatchRuntime {
                 typeID: module.typeID,
                 options: options ?? [],
                 params: module.paramsRaw.map { Float($0) / 65535 },
-                paramIndexByPosition: paramIndex))
+                paramIndexByPosition: paramIndex,
+                savedData: module.savedData))
         }
         for c in document.connections {
             guard let s = indexOf[c.sourceModule], let d = indexOf[c.destModule] else { continue }

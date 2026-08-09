@@ -73,6 +73,64 @@ private final class CorpusLocator {}
         #expect(document.modules.count == 1)
     }
 
+    @Test func removesSingleConnectionByID() throws {
+        let document = PatchDocument(catalog: try catalog())
+        let input = try #require(document.addModule(typeID: 1, at: .zero))
+        let output = try #require(document.addModule(typeID: 2, at: .zero))
+        let src = try #require(input.activeBlocks(in: document.catalog).first { $0.type.isOutput })
+        let dst = try #require(output.activeBlocks(in: document.catalog).first { !$0.type.isOutput })
+        document.connect(
+            from: PortRef(module: input.id, blockPosition: src.position ?? 0, type: src.type),
+            to: PortRef(module: output.id, blockPosition: dst.position ?? 0, type: dst.type))
+        let cable = try #require(document.connections.first)
+        let revision = document.structureRevision
+
+        document.removeConnection(UUID())
+        #expect(document.connections.count == 1, "unknown id is a no-op")
+        #expect(document.structureRevision == revision, "no-op must not force a graph rebuild")
+
+        document.removeConnection(cable.id)
+        #expect(document.connections.isEmpty)
+        #expect(document.modules.count == 2, "modules stay")
+        #expect(document.structureRevision > revision)
+    }
+
+    @Test func pageLifecycle() throws {
+        let document = PatchDocument(catalog: try catalog())
+        let module = try #require(document.addModule(typeID: 1, at: CGPoint(x: 100, y: 100)))
+        #expect(document.pageCount == 1, "a fresh document has one implicit page")
+
+        #expect(document.addPage() == 1)
+        document.renamePage(1, to: "drums & synths on page two")
+        #expect(document.pageName(1) == "drums & synths o", "clipped to 16 ASCII bytes")
+
+        document.moveModule(module.id, toPage: 1)
+        let moved = try #require(document.module(module.id))
+        #expect(moved.page == 1)
+        #expect(moved.canvasPosition.x == 100 + PatchDocument.pageStride,
+                "canvas position follows the page band")
+
+        #expect(!document.removePage(1), "occupied pages stay")
+        document.moveModule(module.id, toPage: 0)
+        #expect(document.removePage(1))
+        #expect(document.pageCount == 1)
+        #expect(!document.removePage(0), "the last page stays")
+
+        // Removing an earlier empty page shifts later assignments down.
+        #expect(document.addPage() == 1)
+        document.moveModule(module.id, toPage: 1)
+        document.renamePage(0, to: "empty")
+        document.renamePage(1, to: "home")
+        #expect(document.removePage(0))
+        let shifted = try #require(document.module(module.id))
+        #expect(shifted.page == 0)
+        #expect(shifted.canvasPosition.x == 100, "band shift undone")
+        #expect(document.pageName(0) == "home")
+
+        // Export sizes the page list from names and assignments alike.
+        #expect(document.buildPatch().pageCountRaw == 1)
+    }
+
     /// Loading a factory patch into the document and rebuilding must
     /// preserve everything the device cares about (semantic equality;
     /// byte layout is the encoder tests' job).
