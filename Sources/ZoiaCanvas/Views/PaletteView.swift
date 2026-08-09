@@ -72,9 +72,18 @@ struct PaletteView: View {
         .buttonStyle(.plain)
 
         if isExpanded(group.category) {
-            ForEach(group.modules) { spec in
-                moduleRow(spec, style: style)
+            // One continuous column: the fill, rounding, and border live on
+            // the column, so the rows read as a single inset block rather
+            // than a bubble apiece.
+            VStack(spacing: 0) {
+                ForEach(group.modules) { spec in
+                    moduleRow(spec, style: style)
+                }
             }
+            .background(style.fill)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(style.border, lineWidth: 1))
+            .padding(.leading, 10)
         }
     }
 
@@ -93,10 +102,7 @@ struct PaletteView: View {
             .foregroundStyle(style.text)
             .padding(.horizontal, 8)
             .frame(height: 22)
-            .background(style.fill)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(style.border, lineWidth: 1))
-            .padding(.leading, 10)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(spec.doc?.description ?? spec.name)
