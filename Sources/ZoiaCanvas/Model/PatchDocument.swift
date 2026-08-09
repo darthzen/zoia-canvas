@@ -248,14 +248,158 @@ final class PatchDocument {
 
     // MARK: - .bin bridge
 
-    /// Canvas spacing for modules laid out from a device patch, grouped by
-    /// page in rows of grid position.
-    private static func layoutPoint(page: Int, gridPosition: Int) -> CGPoint {
-        let column = gridPosition % 8
-        let row = gridPosition / 8
-        return CGPoint(
-            x: 80 + CGFloat(column) * 190 + CGFloat(page) * pageStride,
-            y: 80 + CGFloat(row) * 150)
+    /// Layered, circuit-style layout for modules imported from a device
+    /// patch. Each page ranks its wired modules by signal depth (longest
+    /// path from the page's sources, cycles broken at the lowest grid
+    /// position), so cables flow left to right; a barycenter sweep
+    /// orders each rank to reduce crossings. Chains deeper than the page
+    /// band is wide wrap onto a fresh tier below, and modules with no
+    /// cables on their page flow-pack into a final tier — both keep the
+    /// footprint compact instead of one long ribbon or one tall column.
+    private func packImportedLayout() {
+        let hGap: CGFloat = 60   // cable room between rank columns
+        let vGap: CGFloat = 24
+        let tierGap: CGFloat = 60
+        let margin: CGFloat = 80
+        let pitch = NodeMetrics.width + hGap
+        let ranksPerTier = max(1, Int((Self.pageStride - margin * 2 + hGap) / pitch))
+        // Off-page connector cards render beside their module — leftward
+        // of inputs fed from another page, rightward of outputs feeding
+        // one. Ranks containing such modules reserve a corridor on that
+        // side so no neighbouring rank lands under the cards.
+        let cardClearance = CableLayer.stubLength + CableLayer.cardSize.width + 10
+        let indexOf = Dictionary(uniqueKeysWithValues: modules.enumerated().map { ($1.id, $0) })
+
+        var offPageOut = Set<Int>()
+        var offPageIn = Set<Int>()
+        for c in connections {
+            guard let s = indexOf[c.sourceModule], let d = indexOf[c.destModule],
+                  modules[s].page != modules[d].page else { continue }
+            offPageOut.insert(s)
+            offPageIn.insert(d)
+        }
+
+        func height(_ i: Int) -> CGFloat {
+            NodeMetrics.height(blockCount: modules[i].activeBlocks(in: catalog).count)
+        }
+
+        for page in 0..<pageCount {
+            let pageIndices = modules.indices
+                .filter { modules[$0].page == page }
+                .sorted { modules[$0].gridPosition < modules[$1].gridPosition }
+            guard !pageIndices.isEmpty else { continue }
+            let onPage = Set(pageIndices)
+
+            var preds: [Int: Set<Int>] = [:]
+            var succs: [Int: Set<Int>] = [:]
+            for c in connections {
+                guard let s = indexOf[c.sourceModule], let d = indexOf[c.destModule],
+                      s != d, onPage.contains(s), onPage.contains(d) else { continue }
+                preds[d, default: []].insert(s)
+                succs[s, default: []].insert(d)
+            }
+            let wired = pageIndices.filter { preds[$0] != nil || succs[$0] != nil }
+            let isolated = pageIndices.filter { preds[$0] == nil && succs[$0] == nil }
+
+            // Rank by longest path from the sources.
+            var rank: [Int: Int] = [:]
+            var remaining = Set(wired)
+            while !remaining.isEmpty {
+                var ready = wired.filter { n in
+                    remaining.contains(n)
+                        && (preds[n] ?? []).allSatisfy { !remaining.contains($0) }
+                }
+                if ready.isEmpty {   // cycle: break at the lowest grid position
+                    ready = [wired.first { remaining.contains($0) }!]
+                }
+                for n in ready {
+                    rank[n] = ((preds[n] ?? []).compactMap { rank[$0] }.max() ?? -1) + 1
+                    remaining.remove(n)
+                }
+            }
+            let rankCount = (rank.values.max() ?? -1) + 1
+            var orders: [[Int]] = (0..<max(rankCount, 0)).map { r in
+                wired.filter { rank[$0] == r }
+            }
+
+            // Barycenter sweeps: order each rank by the mean position of
+            // its neighbors in the adjacent ranks.
+            var pos: [Int: Double] = [:]
+            func reindex() {
+                for order in orders {
+                    for (i, n) in order.enumerated() { pos[n] = Double(i) }
+                }
+            }
+            func barycenter(_ n: Int, _ neighbors: [Int: Set<Int>]) -> Double {
+                let anchors = (neighbors[n] ?? []).compactMap { pos[$0] }
+                return anchors.isEmpty ? pos[n] ?? 0
+                    : anchors.reduce(0, +) / Double(anchors.count)
+            }
+            reindex()
+            for _ in 0..<2 where rankCount > 1 {
+                for r in 1..<rankCount {
+                    let keys = Dictionary(uniqueKeysWithValues:
+                        orders[r].map { ($0, barycenter($0, preds)) })
+                    orders[r].sort { keys[$0]! < keys[$1]! }
+                    reindex()
+                }
+                for r in stride(from: rankCount - 2, through: 0, by: -1) {
+                    let keys = Dictionary(uniqueKeysWithValues:
+                        orders[r].map { ($0, barycenter($0, succs)) })
+                    orders[r].sort { keys[$0]! < keys[$1]! }
+                    reindex()
+                }
+            }
+
+            // Place: ranks are columns with card corridors reserved
+            // where a rank talks to other pages, wrapping to a new tier
+            // when the page band runs out of width.
+            let bandStart = margin + CGFloat(page) * Self.pageStride
+            let bandEnd = CGFloat(page) * Self.pageStride + Self.pageStride - margin
+            var tierY = margin
+            var rankIndex = 0
+            while rankIndex < rankCount {
+                var x = bandStart
+                var tierHeight: CGFloat = 0
+                var placedInTier = 0
+                while rankIndex < rankCount {
+                    let rank = orders[rankIndex]
+                    let needsBefore = rank.contains { offPageIn.contains($0) }
+                    let needsAfter = rank.contains { offPageOut.contains($0) }
+                    let startX = x + (needsBefore ? cardClearance : 0)
+                    let endX = startX + NodeMetrics.width + (needsAfter ? cardClearance : 0)
+                    if placedInTier > 0, endX > bandEnd { break }
+                    var y = tierY
+                    for n in rank {
+                        modules[n].canvasPosition = CGPoint(x: startX, y: y)
+                        y += height(n) + vGap
+                    }
+                    tierHeight = max(tierHeight, y - vGap - tierY)
+                    x = startX + pitch + (needsAfter ? cardClearance : 0)
+                    placedInTier += 1
+                    rankIndex += 1
+                }
+                tierY += tierHeight + tierGap
+            }
+
+            // Unwired modules (UI buttons, pixels, …) flow-pack below the
+            // graph so they never tangle with the cabling.
+            var column = 0
+            var rowY = tierY
+            var rowMaxHeight: CGFloat = 0
+            for n in isolated {
+                if column == ranksPerTier {
+                    column = 0
+                    rowY += rowMaxHeight + vGap
+                    rowMaxHeight = 0
+                }
+                modules[n].canvasPosition = CGPoint(
+                    x: margin + CGFloat(page) * Self.pageStride + CGFloat(column) * pitch,
+                    y: rowY)
+                rowMaxHeight = max(rowMaxHeight, height(n))
+                column += 1
+            }
+        }
     }
 
     convenience init(patch: ZoiaPatch, catalog: ModuleCatalog) {
@@ -280,7 +424,7 @@ final class PatchDocument {
                 savedData: entry.savedData,
                 savedDataSizeField: entry.savedDataSizeField,
                 customName: entry.name,
-                canvasPosition: Self.layoutPoint(page: entry.page, gridPosition: entry.position)))
+                canvasPosition: .zero))
         }
         for c in patch.connections where c.sourceModule < ids.count && c.destModule < ids.count {
             connections.append(CanvasConnection(
@@ -289,6 +433,7 @@ final class PatchDocument {
                 destModule: ids[c.destModule], destBlock: c.destBlock,
                 strengthRaw: c.strengthRaw))
         }
+        packImportedLayout()
     }
 
     /// Builds the wire-format patch. Module order is canvas order; the

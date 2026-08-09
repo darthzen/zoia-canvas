@@ -9,6 +9,21 @@ struct ContentView: View {
     @State private var loadError: String?
     @State private var showingImporter = false
     @State private var engine = AudioEngine()
+    @AppStorage("cableStyle") private var cableStyleRaw = CableStyle.curved.rawValue
+
+    /// Curved (parenthesis) vs angular (curly-bracket) cable rendering.
+    private var cableStylePicker: some View {
+        Picker("Cable style", selection: $cableStyleRaw) {
+            Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                .help("Curved cables")
+                .tag(CableStyle.curved.rawValue)
+            Image(systemName: "arrow.turn.right.down")
+                .help("Angular cables")
+                .tag(CableStyle.angular.rawValue)
+        }
+        .pickerStyle(.segmented)
+        .help("Cable style")
+    }
 
     var body: some View {
         Group {
@@ -77,6 +92,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 DSPMeter(total: document.dspTotal)
+                cableStylePicker
                 inputSourceMenu
                 Button(engine.isRunning ? "Stop" : "Play",
                        systemImage: engine.isRunning ? "stop.fill" : "play.fill") {

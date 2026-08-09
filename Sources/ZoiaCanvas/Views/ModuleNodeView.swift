@@ -19,6 +19,15 @@ enum NodeMetrics {
             x: nodeOrigin.x + (isOutput ? width : 0),
             y: nodeOrigin.y + headerHeight + CGFloat(rowIndex) * rowHeight + rowHeight / 2)
     }
+
+    /// Input anchor on the RIGHT edge, for cables whose source sits to
+    /// the right of the destination: entering the row from the right
+    /// with an arrowhead beats looping around the node's left side.
+    static func inputAnchorRight(nodeOrigin: CGPoint, rowIndex: Int) -> CGPoint {
+        CGPoint(
+            x: nodeOrigin.x + width,
+            y: nodeOrigin.y + headerHeight + CGFloat(rowIndex) * rowHeight + rowHeight / 2)
+    }
 }
 
 /// Category colors lifted from Empress's fw5 module-index spreadsheet

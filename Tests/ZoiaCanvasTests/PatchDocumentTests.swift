@@ -131,6 +131,32 @@ private final class CorpusLocator {}
         #expect(document.buildPatch().pageCountRaw == 1)
     }
 
+    /// Imported patches pack the canvas: every node inside its page
+    /// band, no two nodes overlapping. Density itself is a judgement
+    /// call; these are the invariants that keep it legible.
+    @Test func importedLayoutPacksWithoutOverlap() throws {
+        let patch = try ZoiaPatchBinary.decode(
+            try corpusData("Factory/000_zoia_Loop_Forest.bin"))
+        let document = PatchDocument(patch: patch, catalog: try catalog())
+        let placed = document.modules.map { m -> (page: Int, rect: CGRect) in
+            let height = NodeMetrics.height(
+                blockCount: m.activeBlocks(in: document.catalog).count)
+            return (m.page, CGRect(origin: m.canvasPosition,
+                                   size: CGSize(width: NodeMetrics.width, height: height)))
+        }
+        for (page, rect) in placed {
+            let band = CGRect(x: CGFloat(page) * PatchDocument.pageStride, y: 0,
+                              width: PatchDocument.pageStride, height: 1_000_000)
+            #expect(band.contains(rect), "node escapes its page band")
+        }
+        for i in placed.indices {
+            for j in placed.indices where j > i {
+                #expect(!placed[i].rect.intersects(placed[j].rect),
+                        "modules \(i) and \(j) overlap")
+            }
+        }
+    }
+
     /// Loading a factory patch into the document and rebuilding must
     /// preserve everything the device cares about (semantic equality;
     /// byte layout is the encoder tests' job).
