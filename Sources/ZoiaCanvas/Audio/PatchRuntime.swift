@@ -158,6 +158,14 @@ final class PatchRuntime {
         440 * pow(2, (Double(cv) * 127 - 69) / 12)
     }
 
+    /// Filter-cutoff dial: the frequency marks printed in the module index
+    /// (27.5 / 155.56 / 880 / 4978 / 23999 Hz) fit 27.5 × 2^(10·cv)
+    /// exactly; negative cv extends down to 0.03 Hz. Distinct from
+    /// pitchHz, which is the note-CV mapping for oscillators.
+    static func filterHz(_ cv: Float) -> Double {
+        min(max(27.5 * pow(2, Double(cv) * 10), 0.03), 23999)
+    }
+
     // MARK: - Render
 
     /// Renders one control block. `input` carries L/R capture buffers for

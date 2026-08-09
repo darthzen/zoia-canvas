@@ -35,8 +35,8 @@ extension PatchRuntime {
 
     private func renderSVFilter(_ index: Int, _ node: Node, frames: Int) {
         let state = node.state(SVFilterState())
-        // Frequency CV is pitch-mapped (same mapping as the oscillator).
-        let target = min(max(Self.pitchHz(cvIn(node: index, block: 1)), 0.03),
+        // Frequency dial follows the documented filter curve (filterHz).
+        let target = min(max(Self.filterHz(cvIn(node: index, block: 1)), 0.03),
                          sampleRate * 0.49)
         if node.optionText(3) == "smooth", state.cutoff > 0 {
             // Assumption: "smooth" slews the cutoff 15% of the remaining
@@ -207,8 +207,8 @@ extension PatchRuntime {
     private func renderMultiFilter(_ index: Int, _ node: Node, frames: Int) {
         let state = node.state(BiquadState())
         let shape = node.optionText(0)
-        // Frequency CV is pitch-mapped like the oscillator.
-        let freq = min(max(Self.pitchHz(cvIn(node: index, block: 2)), 10),
+        // Frequency dial follows the documented filter curve (filterHz).
+        let freq = min(max(Self.filterHz(cvIn(node: index, block: 2)), 10),
                        sampleRate * 0.45)
         // Assumption: the q knob shows "width 1-100"; CV 0…1 maps to
         // width 1…100 linearly and Q = 20/width (narrow at low CV).

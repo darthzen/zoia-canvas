@@ -16,6 +16,11 @@ import Testing
         (69 + 12 * log2(hz / 440)) / 127
     }
 
+    /// Inverse of the filter-cutoff dial curve (PatchRuntime.filterHz).
+    private func cvForFilterHz(_ hz: Double) -> Double {
+        log2(hz / 27.5) / 10
+    }
+
     private func rms(_ xs: [Float]) -> Float {
         guard !xs.isEmpty else { return 0 }
         return sqrt(xs.reduce(0) { $0 + $1 * $1 } / Float(xs.count))
@@ -37,7 +42,7 @@ import Testing
         let svf = try #require(document.addModule(typeID: 0, at: .zero))
         document.setOption(svf.id, optionIndex: 1, byte: 1)  // hipass out on
         document.setParam(osc.id, paramIndex: 0, fraction: cvForHz(2000))
-        document.setParam(svf.id, paramIndex: 0, fraction: cvForHz(200))
+        document.setParam(svf.id, paramIndex: 0, fraction: cvForFilterHz(200))
         document.connect(
             from: PortRef(module: osc.id, blockPosition: 3, type: .audioOut),
             to: PortRef(module: svf.id, blockPosition: 0, type: .audioIn))
@@ -62,7 +67,7 @@ import Testing
             let svf = try #require(document.addModule(typeID: 0, at: .zero))
             document.setOption(svf.id, optionIndex: 2, byte: 1)  // bandpass on
             document.setParam(osc.id, paramIndex: 0, fraction: cvForHz(inputHz))
-            document.setParam(svf.id, paramIndex: 0, fraction: cvForHz(300))
+            document.setParam(svf.id, paramIndex: 0, fraction: cvForFilterHz(300))
             document.setParam(svf.id, paramIndex: 1, fraction: 0.5)  // resonance
             document.connect(
                 from: PortRef(module: osc.id, blockPosition: 3, type: .audioOut),
@@ -244,7 +249,7 @@ import Testing
             let filter = try #require(document.addModule(typeID: 24, at: .zero))
             document.setOption(filter.id, optionIndex: 0, byte: shapeByte)
             document.setParam(osc.id, paramIndex: 0, fraction: cvForHz(4000))
-            document.setParam(filter.id, paramIndex: 0, fraction: cvForHz(500))  // freq
+            document.setParam(filter.id, paramIndex: 0, fraction: cvForFilterHz(500))  // freq
             document.setParam(filter.id, paramIndex: 1, fraction: 0.1)  // q width
             document.connect(
                 from: PortRef(module: osc.id, blockPosition: 3, type: .audioOut),
@@ -270,7 +275,7 @@ import Testing
         document.setOption(filter.id, optionIndex: 0, byte: 2)  // bell
         document.setParam(osc.id, paramIndex: 0, fraction: cvForHz(1000))
         document.setParam(filter.id, paramIndex: 0, fraction: 1.0)  // gain +24 dB
-        document.setParam(filter.id, paramIndex: 1, fraction: cvForHz(1000))
+        document.setParam(filter.id, paramIndex: 1, fraction: cvForFilterHz(1000))
         document.setParam(filter.id, paramIndex: 2, fraction: 0.1)  // q width
         document.connect(
             from: PortRef(module: osc.id, blockPosition: 3, type: .audioOut),
