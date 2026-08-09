@@ -79,10 +79,14 @@ final class PatchDocument {
 
     // MARK: - Editing
 
+    /// Bumped on any change that alters the runtime graph (modules,
+    /// options, params, cables) so the audio engine knows to rebuild.
+    private(set) var structureRevision = 0
+
     @discardableResult
     func addModule(typeID: Int, at point: CGPoint) -> CanvasModule? {
-        guard let spec = catalog[typeID] else { return nil }
-        let module = CanvasModule(
+        guard catalog[typeID] != nil else { return nil }
+        var module = CanvasModule(
             id: UUID(),
             typeID: typeID,
             version: 0,
@@ -90,18 +94,55 @@ final class PatchDocument {
             gridPosition: 0,
             colorID: 1,
             optionBytes: [UInt8](repeating: 0, count: 8),
-            paramsRaw: [Int](repeating: 0, count: spec.paramCount),
+            paramsRaw: [],
             savedData: Data(),
             savedDataSizeField: 0,
             customName: "",
             canvasPosition: point)
+        // The device sizes the param list to the active param blocks
+        // (verified across the corpus: 7596/7628 modules match exactly).
+        module.paramsRaw = [Int](
+            repeating: 0, count: paramBlocks(of: module).count)
         modules.append(module)
+        structureRevision += 1
         return module
+    }
+
+    /// The active blocks that carry a param word, in param order.
+    func paramBlocks(of module: CanvasModule) -> [BlockSpec] {
+        module.activeBlocks(in: catalog).filter { $0.isParam == true }
+    }
+
+    func setOption(_ id: UUID, optionIndex: Int, byte: UInt8) {
+        guard let index = modules.firstIndex(where: { $0.id == id }),
+              optionIndex < 8 else { return }
+        modules[index].optionBytes[optionIndex] = byte
+        // Options change which blocks exist; the param list follows.
+        let count = paramBlocks(of: modules[index]).count
+        var params = modules[index].paramsRaw
+        while params.count < count { params.append(0) }
+        if params.count > count { params.removeLast(params.count - count) }
+        modules[index].paramsRaw = params
+        // Drop cables whose block no longer exists.
+        let valid = Set(modules[index].activeBlocks(in: catalog).compactMap(\.position))
+        connections.removeAll {
+            ($0.sourceModule == id && !valid.contains($0.sourceBlock))
+                || ($0.destModule == id && !valid.contains($0.destBlock))
+        }
+        structureRevision += 1
+    }
+
+    func setParam(_ id: UUID, paramIndex: Int, fraction: Double) {
+        guard let index = modules.firstIndex(where: { $0.id == id }),
+              paramIndex < modules[index].paramsRaw.count else { return }
+        modules[index].paramsRaw[paramIndex] = Int((fraction.clamped01 * 65535).rounded())
+        structureRevision += 1
     }
 
     func removeModule(_ id: UUID) {
         modules.removeAll { $0.id == id }
         connections.removeAll { $0.sourceModule == id || $0.destModule == id }
+        structureRevision += 1
     }
 
     func ruling(from source: PortRef, to dest: PortRef) -> ConnectionRuling {
@@ -125,6 +166,7 @@ final class PatchDocument {
                 sourceModule: source.module, sourceBlock: source.blockPosition,
                 destModule: dest.module, destBlock: dest.blockPosition,
                 strengthRaw: strengthRaw))
+            structureRevision += 1
         case .notOutputToInput, .sameModule, .duplicate:
             break
         }
@@ -231,4 +273,8 @@ final class PatchDocument {
         data.append(Data(count: 16 - data.count))
         return data
     }
+}
+
+extension Double {
+    var clamped01: Double { Swift.min(Swift.max(self, 0), 1) }
 }
