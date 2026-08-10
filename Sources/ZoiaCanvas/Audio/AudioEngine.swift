@@ -208,27 +208,66 @@ final class AudioEngine {
         isRunning = false
     }
 
-    /// Peak output level per (module index, block) pair, for the cable
-    /// activity lights. One lock round-trip for the whole list; the box
-    /// lock also serializes against the render callback, so the node
-    /// dictionaries are never read mid-mutation. Entries with a negative
-    /// module index (unresolved) read 0.
-    func sourceLevels(_ sources: [(module: Int, block: Int)]) -> [Float] {
-        var levels = [Float](repeating: 0, count: sources.count)
-        guard isRunning else { return levels }
+    /// One lane's live signal for the cable animations. CV lanes carry
+    /// the gate-event history (pulses traveling the cable) and the
+    /// recent-change delta (modulation overlay); audio lanes carry a
+    /// snapshot of the rolling waveform.
+    enum LaneSignal {
+        case cv(events: [SignalTap.GateEvent], recentChange: Float, level: Float)
+        case audio(viz: [Float], level: Float)
+
+        var level: Float {
+            switch self {
+            case .cv(_, _, let level), .audio(_, let level): level
+            }
+        }
+    }
+
+    /// Per-connection signal snapshots, one lock round-trip for the
+    /// whole list — the rich sibling of `sourceLevels`. Unresolved or
+    /// untapped lanes read nil.
+    func laneSignals(_ sources: [(module: Int, block: Int)],
+                     now: Double) -> [LaneSignal?] {
+        var signals = [LaneSignal?](repeating: nil, count: sources.count)
+        guard isRunning else { return signals }
         runtimeBox.withRuntime { runtime in
             guard let runtime else { return }
             for (i, source) in sources.enumerated()
             where source.module >= 0 && source.module < runtime.nodes.count {
                 let node = runtime.nodes[source.module]
-                if let cv = node.cvOut[source.block] {
-                    levels[i] = abs(cv)
-                } else if let audio = node.audioOut[source.block] {
-                    levels[i] = audio.reduce(0) { max($0, abs($1)) }
+                guard let tap = runtime.taps[source.module << 8 | (source.block & 0xFF)]
+                else { continue }
+                if let audio = node.audioOut[source.block] {
+                    signals[i] = .audio(
+                        viz: tap.vizSnapshot(),
+                        level: audio.reduce(0) { max($0, abs($1)) })
+                } else if let cv = node.cvOut[source.block] {
+                    signals[i] = .cv(events: tap.recentEvents(now: now),
+                                     recentChange: tap.recentChange,
+                                     level: abs(cv))
                 }
             }
         }
-        return levels
+        return signals
+    }
+
+    /// Bespoke module highlight per node index: audio outputs by RMS,
+    /// CV outputs by 250 ms decay from the last gate-on edge; a node
+    /// takes the max across its output taps.
+    func moduleHighlights(count: Int, now: Double) -> [Float] {
+        var highlights = [Float](repeating: 0, count: count)
+        guard isRunning else { return highlights }
+        runtimeBox.withRuntime { runtime in
+            guard let runtime else { return }
+            for (key, tap) in runtime.taps {
+                let node = key >> 8
+                guard node < count else { continue }
+                let highlight = tap.isAudio ? tap.audioHighlight()
+                                            : tap.noteHighlight(now: now)
+                highlights[node] = max(highlights[node], highlight)
+            }
+        }
+        return highlights
     }
 
     /// Rebuilds the runtime from the current document; safe to call while

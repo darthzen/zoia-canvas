@@ -98,6 +98,10 @@ final class PatchRuntime {
     /// Wires grouped by (destNode, destBlock) for fast summing.
     private var wiresInto: [Int: [Wire]] = [:]
     weak var midi: MidiPort?
+    /// Signal history per output port, keyed node << 8 | block — the
+    /// same key scheme as `wiresInto`. Every populated output gets a
+    /// tap, wired or not, so module highlights work on dead-end blocks.
+    private(set) var taps: [Int: SignalTap] = [:]
 
     @MainActor
     init(document: PatchDocument, sampleRate: Double) {
@@ -175,9 +179,12 @@ final class PatchRuntime {
 
     /// Renders one control block. `input` carries L/R capture buffers for
     /// Audio Input modules (may be empty), `output` receives the L/R mix.
+    /// `now` timestamps this block's signal-tap events; tests pass a
+    /// deterministic clock.
     func render(frames: Int,
                 inputL: [Float] = [], inputR: [Float] = [],
-                outputL: inout [Float], outputR: inout [Float]) {
+                outputL: inout [Float], outputR: inout [Float],
+                now: Double = Date().timeIntervalSinceReferenceDate) {
         var ctx = RenderContext(
             frames: frames, inputL: inputL, inputR: inputR,
             incoming: midi?.drainIncoming() ?? [],
@@ -199,5 +206,24 @@ final class PatchRuntime {
         }
         outputL = ctx.outputL
         outputR = ctx.outputR
+
+        let blocksPerSecond = sampleRate / Double(max(frames, 1))
+        for (index, node) in nodes.enumerated() {
+            for (block, cv) in node.cvOut {
+                tap(index, block).updateCV(cv, time: now,
+                                           blocksPerSecond: blocksPerSecond)
+            }
+            for (block, samples) in node.audioOut {
+                tap(index, block).updateAudio(samples)
+            }
+        }
+    }
+
+    private func tap(_ node: Int, _ block: Int) -> SignalTap {
+        let key = node << 8 | (block & 0xFF)
+        if let existing = taps[key] { return existing }
+        let fresh = SignalTap()
+        taps[key] = fresh
+        return fresh
     }
 }

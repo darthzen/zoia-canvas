@@ -18,9 +18,9 @@ private struct PendingCable {
 struct PatchEditorView: View {
     @Bindable var document: PatchDocument
     @Binding var selection: UUID?
-    /// Live engine, for the cable activity lights: flow dashes appear
-    /// only while the patch plays AND the lane's source block carries
-    /// signal. Nil (previews, tests) draws plain cables.
+    /// Live engine, for the signal animations: gate pulses, waveform
+    /// cables, and module glows appear only while the patch plays.
+    /// Nil (previews, tests) draws plain cables.
     var engine: AudioEngine?
 
     private var isPlaying: Bool { engine?.isRunning ?? false }
@@ -812,14 +812,20 @@ struct CableLayer: View {
     let time: TimeInterval
 
     var body: some View {
-        // One engine query per frame for every lane: flow lights appear
-        // only while the patch plays and the source block carries signal.
+        // One engine query per frame for every lane: signal animations
+        // appear only while the patch plays. CV lanes get gate pulses
+        // and the modulation overlay, audio lanes draw as their
+        // waveform, modules glow-and-grow with their output level —
+        // Bespoke Synth's cable/module animations, driven by this
+        // runtime's taps.
         let indexOf = Dictionary(uniqueKeysWithValues: document.modules.enumerated().map { ($1.id, $0) })
         let sources = document.connections.map {
             (module: indexOf[$0.sourceModule] ?? -1, block: $0.sourceBlock)
         }
-        let levels = (engine?.isRunning ?? false)
-            ? (engine?.sourceLevels(sources) ?? []) : []
+        let live = engine?.isRunning ?? false
+        let signals = live ? (engine?.laneSignals(sources, now: time) ?? []) : []
+        let highlights = live
+            ? (engine?.moduleHighlights(count: document.modules.count, now: time) ?? []) : []
         return Canvas { context, _ in
             if pass == .over {
                 let connectionByID = Dictionary(
@@ -836,10 +842,19 @@ struct CableLayer: View {
                 }
                 return
             }
+            // Module glow-and-grow (Bespoke DrawFrame): the halo behind a
+            // node inflates by highlight × 40 world points and brightens
+            // with it, pulsing with the module's output.
+            for (index, module) in document.modules.enumerated()
+            where index < highlights.count && highlights[index] > 0.004 {
+                drawModuleGlow(module, highlight: CGFloat(highlights[index]),
+                               in: &context)
+            }
             for (index, connection) in document.connections.enumerated() {
                 guard let geometry = Self.geometry(connection, in: document) else { continue }
                 let color = cableColor(connection)
                 let selected = connection.id == selectedCable
+                let signal = index < signals.count ? signals[index] : nil
 
                 switch geometry {
                 case .direct(let endpoints):
@@ -848,7 +863,6 @@ struct CableLayer: View {
                         context.fill(arrowhead(at: transform(endpoints.to), pointing: -1),
                                      with: .color(color))
                     }
-                    let strength = min(max(Double(connection.strengthRaw) / 10000, 0), 1)
 
                     // Selection halo under everything else on the cable.
                     if selected {
@@ -858,21 +872,9 @@ struct CableLayer: View {
                     // Glow underlay, then the cable body.
                     context.stroke(path, with: .color(color.opacity(0.25)),
                                    style: StrokeStyle(lineWidth: 6 * zoom, lineCap: .round))
-                    context.stroke(path, with: .color(color),
-                                   style: StrokeStyle(lineWidth: 2 * zoom, lineCap: .round))
-
-                    // Energy flow: bright dashes marching source → destination,
-                    // drawn only for lanes with live signal. Phase decreases so
-                    // motion runs with the path direction.
-                    guard index < levels.count, levels[index] > 0.001 else { continue }
-                    let speed = (40 + 80 * strength) * zoom
-                    context.stroke(
-                        path,
-                        with: .color(.white.opacity(0.25 + 0.5 * strength)),
-                        style: StrokeStyle(
-                            lineWidth: 2.2 * zoom, lineCap: .round,
-                            dash: [3 * zoom, 13 * zoom],
-                            dashPhase: -CGFloat(time.truncatingRemainder(dividingBy: 3600)) * speed))
+                    drawSignal(signal, along: directSampler(endpoints),
+                               basePath: path, color: color, reversed: false,
+                               in: &context)
 
                 case .offPage:
                     break   // drawn from resolvedStubs below, post-stacking
@@ -884,13 +886,18 @@ struct CableLayer: View {
             // expanded set so hidden cards never shift visible ones.
             let connectionByID = Dictionary(
                 uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
+            let indexByID = Dictionary(
+                uniqueKeysWithValues: document.connections.enumerated().map { ($1.id, $0) })
             let visibleKeys: Set<StubKey>? = expandAll ? nil : expandedStubs
             for item in Self.resolvedStubs(in: document, offsets: stubOffsets,
                                            only: visibleKeys) {
                 guard let connection = connectionByID[item.key.connection] else { continue }
+                let index = indexByID[connection.id] ?? -1
                 drawStubLine(item, in: &context,
                              color: cableColor(connection),
-                             selected: connection.id == selectedCable)
+                             selected: connection.id == selectedCable,
+                             signal: index >= 0 && index < signals.count
+                                 ? signals[index] : nil)
             }
             if !expandAll {
                 for item in Self.resolvedStubs(in: document, offsets: stubOffsets)
@@ -1223,31 +1230,232 @@ struct CableLayer: View {
     }
 
     /// The stub line from an off-page connector's port to its card edge,
-    /// following the card wherever stacking or dragging put it.
+    /// following the card wherever stacking or dragging put it. Carries
+    /// the same signal animation as a direct cable; on the destination
+    /// end the flow reverses, arriving card → port.
     private func drawStubLine(_ item: CableLayer.ResolvedStub,
                               in context: inout GraphicsContext,
-                              color: Color, selected: Bool) {
+                              color: Color, selected: Bool,
+                              signal: AudioEngine.LaneSignal?) {
         let route = Self.stubRoute(item, style: style)
         let viewPoints = route.points.map(transform)
         var line = Path()
+        let sampler: PathSampler
         if route.isBezier {
             line.move(to: viewPoints[0])
             line.addCurve(to: viewPoints[3],
                           control1: viewPoints[1], control2: viewPoints[2])
+            sampler = PathSampler(from: viewPoints[0], control1: viewPoints[1],
+                                  control2: viewPoints[2], to: viewPoints[3])
         } else {
             line = Self.roundedPath(viewPoints,
                                     radius: Self.angularCornerRadius * zoom)
+            sampler = PathSampler(polyline: Self.flattenedCorners(
+                viewPoints, radius: Self.angularCornerRadius * zoom))
         }
         if selected {
             context.stroke(line, with: .color(.white.opacity(0.9)),
                            style: StrokeStyle(lineWidth: 5 * zoom, lineCap: .round))
         }
-        context.stroke(line, with: .color(color),
-                       style: StrokeStyle(lineWidth: 2 * zoom, lineCap: .round))
+        drawSignal(signal, along: sampler, basePath: line, color: color,
+                   reversed: !item.key.isSource, in: &context)
         if !item.key.isSource {   // cable arrives INTO this input
             context.fill(arrowhead(at: transform(item.stub.port), pointing: 1),
                          with: .color(color))
         }
+    }
+
+    // MARK: - Signal animations (ported from Bespoke Synth)
+
+    /// The Bespoke cable body: audio lanes draw AS their waveform
+    /// (PatchCable.cpp:314), CV lanes get a dimmed body with gate
+    /// pulses traveling it (252) and the blue↔red modulation overlay
+    /// (208). No signal — or engine stopped — falls back to the plain
+    /// body stroke. `reversed` runs the flow tip-to-tail for
+    /// destination-end stubs.
+    private func drawSignal(_ signal: AudioEngine.LaneSignal?,
+                            along sampler: @autoclosure () -> PathSampler,
+                            basePath: Path, color: Color, reversed: Bool,
+                            in context: inout GraphicsContext) {
+        let bodyStyle = StrokeStyle(lineWidth: 2 * zoom, lineCap: .round)
+        switch signal {
+        case nil:
+            context.stroke(basePath, with: .color(color), style: bodyStyle)
+        case .audio(let viz, _):
+            context.stroke(waveformPath(along: sampler(), viz: viz,
+                                        reversed: reversed),
+                           with: .color(color), style: bodyStyle)
+        case .cv(let events, let recentChange, _):
+            // Base dims while live so the traveling pulses read against
+            // it — Bespoke's 0.4-alpha idle line under full-alpha flow.
+            context.stroke(basePath, with: .color(color.opacity(0.45)),
+                           style: bodyStyle)
+            drawModulationOverlay(recentChange, path: basePath, in: &context)
+            drawGatePulses(events, along: sampler(), color: color,
+                           reversed: reversed, in: &context)
+        }
+    }
+
+    /// Gate edges sweep the cable over 250 ms (PatchCable.cpp:252): each
+    /// on-event lights the span between its position and the following
+    /// event's, thick at first, decaying, with a bar-synced shimmer.
+    private func drawGatePulses(_ events: [SignalTap.GateEvent],
+                                along sampler: PathSampler, color: Color,
+                                reversed: Bool,
+                                in context: inout GraphicsContext) {
+        var lastElapsed = 0.0
+        for event in events {
+            let sinceEvent = time - event.time
+            let elapsed = sinceEvent / SignalTap.historyLength
+            let clamped = min(elapsed, 1)
+            if event.on, clamped > lastElapsed {
+                let width = CableAnimation.litWidth(elapsed: elapsed,
+                                                    sinceEvent: sinceEvent)
+                context.stroke(
+                    segment(sampler, from: lastElapsed, to: clamped,
+                            reversed: reversed),
+                    with: .color(color),
+                    style: StrokeStyle(lineWidth: width * zoom, lineCap: .round))
+            }
+            lastElapsed = clamped
+            if clamped >= 1 { break }
+        }
+    }
+
+    /// The modulation overlay (PatchCable.cpp:208): a 3-point line over
+    /// the cable, blue when the CV just fell, red when it just rose,
+    /// fading out as the value settles.
+    private func drawModulationOverlay(_ recentChange: Float, path: Path,
+                                       in context: inout GraphicsContext) {
+        // ZOIA CV range is nominally 0…1, so the delta normalizes by 1
+        // where Bespoke divides by the modulator's target range.
+        let delta = min(max(recentChange, -1), 1)
+        let alpha = CableAnimation.modulationAlpha(delta)
+        guard alpha > 0.02 else { return }
+        let t = Double(delta) * 0.5 + 0.5
+        context.stroke(
+            path,
+            with: .color(Color(red: t, green: 0, blue: 1 - t).opacity(Double(alpha))),
+            style: StrokeStyle(lineWidth: 3 * zoom, lineCap: .round))
+    }
+
+    /// The cable drawn as its audio (PatchCable.cpp:346): points along
+    /// the path displace perpendicular by the sqrt-compressed sample at
+    /// that position's age, newest at the source end — signal visibly
+    /// streams down the wire. Endpoints stay anchored at the ports.
+    private func waveformPath(along sampler: PathSampler, viz: [Float],
+                              reversed: Bool) -> Path {
+        var path = Path()
+        path.move(to: sampler.point(at: reversed ? 1 : 0))
+        let worldLength = sampler.length / zoom
+        // Bespoke's step: world length / (100 × quality), quality = draw
+        // scale — denser sampling as you zoom in, clamped 1…7 points.
+        let worldStep = min(max(worldLength / (100 * zoom), 1), 7)
+        let step = worldStep * zoom
+        var distance = step
+        while distance < sampler.length - step {
+            let t = distance / sampler.length
+            let fraction = reversed ? 1 - t : t
+            let ago = Int(CGFloat(viz.count - 1) * fraction)
+            let sample = CableAnimation.compress(viz[ago])
+            let base = sampler.point(at: fraction)
+            let normal = sampler.perpendicular(at: fraction)
+            path.addLine(to: CGPoint(
+                x: base.x + normal.x * 10 * zoom * CGFloat(sample),
+                y: base.y + normal.y * 10 * zoom * CGFloat(sample)))
+            distance += step
+        }
+        path.addLine(to: sampler.point(at: reversed ? 0 : 1))
+        return path
+    }
+
+    /// Sub-span of the path between two arc-length fractions, sampled
+    /// finely enough to follow curves.
+    private func segment(_ sampler: PathSampler, from t0: Double, to t1: Double,
+                         reversed: Bool) -> Path {
+        var path = Path()
+        let span = max(t1 - t0, 0)
+        let count = max(Int(sampler.length * span / (6 * zoom)), 1)
+        for i in 0...count {
+            let t = t0 + span * Double(i) / Double(count)
+            let fraction = CGFloat(reversed ? 1 - t : t)
+            let point = sampler.point(at: fraction)
+            if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        return path
+    }
+
+    private func directSampler(_ e: Endpoints) -> PathSampler {
+        switch style {
+        case .curved:
+            let (c1, c2) = Self.worldControlPoints(e)
+            return PathSampler(from: transform(e.from), control1: transform(c1),
+                               control2: transform(c2), to: transform(e.to))
+        case .angular:
+            let route = Self.angularRoute(from: e.from, to: e.to,
+                                          entersRight: e.entersRight).map(transform)
+            return PathSampler(polyline: Self.flattenedCorners(
+                route, radius: Self.angularCornerRadius * zoom))
+        }
+    }
+
+    /// Polyline approximation of `roundedPath` — the pulse and waveform
+    /// samplers must follow the same rounded corners the body strokes,
+    /// or lit segments cut across them.
+    static func flattenedCorners(_ points: [CGPoint], radius: CGFloat) -> [CGPoint] {
+        guard points.count > 2 else { return points }
+        var flat: [CGPoint] = [points[0]]
+        for i in 1..<points.count - 1 {
+            let previous = points[i - 1]
+            let corner = points[i]
+            let next = points[i + 1]
+            let inLength = hypot(corner.x - previous.x, corner.y - previous.y)
+            let outLength = hypot(next.x - corner.x, next.y - corner.y)
+            guard inLength > 0.01, outLength > 0.01 else { continue }
+            let r = min(radius, inLength / 2, outLength / 2)
+            let inDir = CGPoint(x: (corner.x - previous.x) / inLength,
+                                y: (corner.y - previous.y) / inLength)
+            let outDir = CGPoint(x: (next.x - corner.x) / outLength,
+                                 y: (next.y - corner.y) / outLength)
+            let entry = CGPoint(x: corner.x - inDir.x * r, y: corner.y - inDir.y * r)
+            let exit = CGPoint(x: corner.x + outDir.x * r, y: corner.y + outDir.y * r)
+            flat.append(entry)
+            for step in [0.25, 0.5, 0.75] {
+                let t = CGFloat(step)
+                let u = 1 - t
+                // Quadratic bezier entry → corner → exit, matching the
+                // addQuadCurve in roundedPath.
+                flat.append(CGPoint(
+                    x: u * u * entry.x + 2 * u * t * corner.x + t * t * exit.x,
+                    y: u * u * entry.y + 2 * u * t * corner.y + t * t * exit.y))
+            }
+            flat.append(exit)
+        }
+        flat.append(points[points.count - 1])
+        return flat
+    }
+
+    /// The Bespoke module halo: a rounded rect behind the node,
+    /// inflated by highlight × 40 world points with matching corner
+    /// growth, in the module's category color, brightening as the
+    /// highlight rises. Highlight peaks at 0.15, so the ring reaches
+    /// 6 world points — a pulse, not a flare.
+    private func drawModuleGlow(_ module: CanvasModule, highlight: CGFloat,
+                                in context: inout GraphicsContext) {
+        let blocks = module.activeBlocks(in: document.catalog)
+        let grow = highlight * CableAnimation.highlightGrow
+        let world = CGRect(
+            origin: module.canvasPosition,
+            size: CGSize(width: NodeMetrics.width,
+                         height: NodeMetrics.height(blockCount: blocks.count)))
+            .insetBy(dx: -grow, dy: -grow)
+        let view = CGRect(origin: transform(world.origin),
+                          size: CGSize(width: world.width * zoom,
+                                       height: world.height * zoom))
+        let shape = Path(roundedRect: view, cornerRadius: (8 + grow) * zoom)
+        let color = categoryStyle(document.catalog[module.typeID]?.category ?? "").header
+        context.fill(shape,
+                     with: .color(color.opacity(min(highlight / 0.15, 1) * 0.85)))
     }
 
     /// Where a collapsed connector end shows its nodule: just off the
