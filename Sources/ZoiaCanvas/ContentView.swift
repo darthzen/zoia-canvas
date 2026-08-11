@@ -2,16 +2,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    var requests = FileRequests()
+    let router: WindowRouter
+    let initialURL: URL?
 
-    @State private var document: PatchDocument?
+    @State private var session = PatchSession()
     @State private var selection: UUID?
-    /// Where Save writes: the opened file, or the home an untitled
-    /// patch picked in its first save panel.
-    @State private var fileURL: URL?
-    @State private var loadError: String?
-    @State private var showingImporter = false
     @State private var engine = AudioEngine()
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("cableStyle") private var cableStyleRaw = CableStyle.curved.rawValue
 
     /// Curved (parenthesis) vs angular (curly-bracket) cable rendering.
@@ -30,42 +27,47 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let document {
+            if let document = session.document {
                 editor(document)
             } else {
                 ProgressView()
-                    .task { loadCatalog() }
             }
         }
+        .focusedSceneValue(\.patchSession, session)
         .alert("Problem", isPresented: .init(
-            get: { loadError != nil }, set: { if !$0 { loadError = nil } })) {
+            get: { session.loadError != nil },
+            set: { if !$0 { session.loadError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(loadError ?? "")
+            Text(session.loadError ?? "")
         }
-        .onChange(of: requests.openPanelTicket) { showingImporter = true }
-        .onChange(of: requests.exportTicket) {
-            if let document { exportBin(document) }
-        }
-        .onChange(of: requests.saveTicket) {
-            if let document { saveBin(document) }
-        }
-        .onChange(of: requests.pendingURL) {
-            if let url = requests.pendingURL {
-                openBin(at: url)
-                requests.pendingURL = nil
+        .background(WindowAccessor { session.adoptWindow($0) })
+        .onAppear {
+            router.register(session)
+            if let initialURL {
+                session.schedule(frame: router.claimFrame(for: initialURL))
+                session.openBin(at: initialURL)
+            } else {
+                router.launchRestore(into: session)
             }
+            consumeSpawn()
         }
+        .onDisappear {
+            session.persistLayout()
+            router.unregister(session)
+        }
+        // A patch that needs its own window (every window busy) waits in
+        // the router; any live window spawns it.
+        .onChange(of: router.pendingSpawns) { consumeSpawn() }
+        // A new document means a new module set; stale selection would
+        // point the inspector at a ghost.
+        .onChange(of: session.document.map(ObjectIdentifier.init)) { selection = nil }
     }
 
-    private func loadCatalog() {
-        do {
-            document = PatchDocument(catalog: try ModuleCatalog.loadBundled())
-        } catch {
-            loadError = "Module catalog failed to load: \(error)"
-            return
+    private func consumeSpawn() {
+        if let url = router.takeSpawn() {
+            openWindow(id: "patch", value: url)
         }
-        restoreLastPatch()
     }
 
     private func editor(_ document: PatchDocument) -> some View {
@@ -94,7 +96,7 @@ struct ContentView: View {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                 guard let data = item as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                Task { @MainActor in openBin(at: url) }
+                Task { @MainActor in router.route(url, preferring: session) }
             }
             return true
         }
@@ -122,26 +124,24 @@ struct ContentView: View {
                     }
                 }
                 Button("Open…", systemImage: "folder") {
-                    showingImporter = true
+                    session.showingOpenPanel = true
                 }
                 Button("Save", systemImage: "square.and.arrow.down") {
-                    saveBin(document)
+                    session.save()
                 }
                 .disabled(!document.isEdited)
                 .help(document.isEdited ? "Save changes (⌘S)" : "No unsaved changes")
-                Button("Export…", systemImage: "square.and.arrow.up") {
-                    exportBin(document)
-                }
-                .disabled(document.modules.isEmpty)
             }
         }
         .onChange(of: document.structureRevision) {
             if engine.isRunning { engine.rebuild(document: document) }
         }
-        .fileImporter(isPresented: $showingImporter,
+        .fileImporter(isPresented: .init(
+            get: { session.showingOpenPanel },
+            set: { session.showingOpenPanel = $0 }),
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data]) { result in
             if case .success(let url) = result {
-                openBin(at: url)
+                router.route(url, preferring: session)
             }
         }
     }
@@ -171,99 +171,30 @@ struct ContentView: View {
         }
         .help("Audio input source — pick a loopback device (e.g. BlackHole) to route another app in")
     }
+}
 
-    private func openBin(at url: URL) {
-        guard let current = document else { return }
-        let secured = url.startAccessingSecurityScopedResource()
-        defer { if secured { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let patch = try ZoiaPatchBinary.decode(Data(contentsOf: url))
-            let loaded = PatchDocument(patch: patch, catalog: current.catalog)
-            if loaded.patchName.isEmpty {
-                loaded.patchName = url.deletingPathExtension().lastPathComponent
-            }
-            document = loaded
-            selection = nil
-            fileURL = url
-            rememberLastPatch(url)
-        } catch {
-            loadError = "\(url.lastPathComponent): \(error)"
+/// Hands the hosting NSWindow to the session, for workspace frame
+/// save/restore.
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    final class Probe: NSView {
+        var onWindow: ((NSWindow?) -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = window
+            Task { @MainActor in self.onWindow?(window) }
         }
     }
 
-    /// ⌘S: write back to the open file; an untitled patch picks its
-    /// home through the save panel once and saves silently after.
-    /// Export stays separate — it writes a copy without adopting it.
-    private func saveBin(_ document: PatchDocument) {
-        let blockers = document.gridExportBlockers
-        guard blockers.isEmpty else {
-            loadError = "Cannot save.\n" + blockers.joined(separator: "\n")
-            return
-        }
-        let url = fileURL ?? runSavePanel(document)
-        guard let url else { return }
-        do {
-            try document.encodeBin().write(to: url)
-            if document.patchName.isEmpty {
-                document.patchName = url.deletingPathExtension().lastPathComponent
-            }
-            fileURL = url
-            document.markSaved()
-            rememberLastPatch(url)
-        } catch {
-            loadError = "Save failed: \(error)"
-        }
+    func makeNSView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.onWindow = onWindow
+        return probe
     }
 
-    private func runSavePanel(_ document: PatchDocument) -> URL? {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
-        panel.nameFieldStringValue =
-            "\(document.patchName.isEmpty ? "patch" : document.patchName).bin"
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
-    }
-
-    private static let lastPatchKey = "lastOpenedPatch"
-
-    /// Launch opens the last patch that was open, not an untitled one.
-    /// A bookmark (not a path) so the file is found again after a move;
-    /// the app is unsandboxed, so no security scope is involved.
-    private func rememberLastPatch(_ url: URL) {
-        if let data = try? url.bookmarkData() {
-            UserDefaults.standard.set(data, forKey: Self.lastPatchKey)
-        }
-    }
-
-    private func restoreLastPatch() {
-        guard let data = UserDefaults.standard.data(forKey: Self.lastPatchKey) else { return }
-        var stale = false
-        guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
-              FileManager.default.fileExists(atPath: url.path) else {
-            // The file is gone; forget it quietly rather than alerting
-            // on every launch until something else is opened.
-            UserDefaults.standard.removeObject(forKey: Self.lastPatchKey)
-            return
-        }
-        openBin(at: url)
-        if stale { rememberLastPatch(url) }
-    }
-
-    private func exportBin(_ document: PatchDocument) {
-        // buildPatch writes grid positions verbatim; a page over its 40
-        // buttons would put modules on top of each other on the pedal.
-        let blockers = document.gridExportBlockers
-        guard blockers.isEmpty else {
-            loadError = "Cannot export.\n" + blockers.joined(separator: "\n")
-            return
-        }
-        guard let url = runSavePanel(document) else { return }
-        do {
-            try document.encodeBin().write(to: url)
-        } catch {
-            loadError = "Export failed: \(error)"
-        }
-    }
+    func updateNSView(_ nsView: Probe, context: Context) {}
 }
 
 /// The ZOIA's DSP budget is 100%; estimates come from the module catalog
@@ -286,5 +217,5 @@ struct DSPMeter: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(router: WindowRouter(), initialURL: nil)
 }

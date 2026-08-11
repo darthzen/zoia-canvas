@@ -161,7 +161,12 @@ struct PatchEditorView: View {
         .onAppear {
             editorFocused = true
             installEventMonitors()
+            adoptViewport()
         }
+        // Mirror the viewport into the document so the canvas-layout
+        // sidecar persists it with the node positions.
+        .onChange(of: zoom) { document.viewportZoom = zoom }
+        .onChange(of: offset) { document.viewportOffset = offset }
         // Leaving expand-all lands back on nodules everywhere — stale
         // per-card expansions would reopen cards the user never clicked.
         .onChange(of: document.isCardLayoutExpanded) { _, expanded in
@@ -174,6 +179,7 @@ struct PatchEditorView: View {
         .onChange(of: ObjectIdentifier(document)) {
             removeEventMonitors()
             installEventMonitors()
+            adoptViewport()
         }
         .onDeleteCommand {
             if let cable = selectedCable {
@@ -410,6 +416,14 @@ struct PatchEditorView: View {
     private func installEventMonitors() {
         installScrollMonitor()
         installKeyMonitor()
+    }
+
+    /// Takes over the document's stored viewport — a reopened patch
+    /// shows exactly the zoom and pan it was closed with.
+    private func adoptViewport() {
+        zoom = document.viewportZoom
+        offset = document.viewportOffset
+        panStart = offset
     }
 
     private func removeEventMonitors() {
@@ -1629,6 +1643,11 @@ private struct WindowFrameReader: NSViewRepresentable {
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            // Remember the window frame across closes and launches.
+            // The name is first-claim; extra windows just cascade.
+            if let window, window.frameAutosaveName.isEmpty {
+                _ = window.setFrameAutosaveName("ZoiaCanvas.patchWindow")
+            }
             report()
         }
         private func report() {

@@ -72,6 +72,11 @@ final class PatchDocument {
         modules.reduce(0) { $0 + (catalog[$1.typeID]?.cpu ?? 0) }
     }
 
+    /// Editor viewport (zoom and pan), mirrored here by the editor so
+    /// the canvas-layout sidecar can persist it. Never exported.
+    var viewportZoom: CGFloat = 1
+    var viewportOffset: CGSize = .zero
+
     init(catalog: ModuleCatalog) {
         self.catalog = catalog
         self.patchName = "Untitled"
