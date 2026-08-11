@@ -7,12 +7,15 @@ private struct PortHit {
     var anchor: CGPoint
 }
 
-/// An in-progress cable drag.
+/// An in-progress cable drag — a fresh one from an output port, or an
+/// existing cable picked up by its input end (which carries its
+/// strength along to wherever it lands).
 private struct PendingCable {
     var source: PortRef
     var sourceAnchor: CGPoint
     var current: CGPoint
     var ruling: ConnectionRuling?
+    var strengthRaw: Int = 10000
 }
 
 struct PatchEditorView: View {
@@ -164,12 +167,13 @@ struct PatchEditorView: View {
         .onChange(of: document.isCardLayoutExpanded) { _, expanded in
             if !expanded { expandedStubs = [] }
         }
-        .onDisappear {
-            for monitor in [scrollMonitor, keyMonitor].compactMap({ $0 }) {
-                NSEvent.removeMonitor(monitor)
-            }
-            scrollMonitor = nil
-            keyMonitor = nil
+        .onDisappear { removeEventMonitors() }
+        // Opening a file swaps in a fresh PatchDocument; the monitors'
+        // closures captured the old one and would delete from a document
+        // nothing renders anymore. Reinstall so they hold the live one.
+        .onChange(of: ObjectIdentifier(document)) {
+            removeEventMonitors()
+            installEventMonitors()
         }
         .onDeleteCommand {
             if let cable = selectedCable {
@@ -408,6 +412,14 @@ struct PatchEditorView: View {
         installKeyMonitor()
     }
 
+    private func removeEventMonitors() {
+        for monitor in [scrollMonitor, keyMonitor].compactMap({ $0 }) {
+            NSEvent.removeMonitor(monitor)
+        }
+        scrollMonitor = nil
+        keyMonitor = nil
+    }
+
     /// =/- on the main row and keypad, plus 0 for reset.
     private static let zoomInKeys: Set<UInt16> = [24, 69]
     private static let zoomOutKeys: Set<UInt16> = [27, 78]
@@ -560,10 +572,20 @@ struct PatchEditorView: View {
                     return
                 }
                 let world = toWorld(value.startLocation)
-                if let hit = portHit(near: world, in: module, blocks: blocks),
-                   hit.ref.type.isOutput {
+                let hit = portHit(near: world, in: module, blocks: blocks)
+                if let hit, hit.ref.type.isOutput {
                     pendingCable = PendingCable(
                         source: hit.ref, sourceAnchor: hit.anchor, current: world)
+                } else if let hit, let picked = document.unplugConnection(into: hit.ref),
+                          let anchor = portAnchor(of: picked.source) {
+                    // Dragging an occupied input unplugs its newest
+                    // cable: the source end stays anchored, the freed
+                    // end follows the cursor — drop on another input to
+                    // move it, on nothing to disconnect.
+                    if selectedCable == picked.id { selectedCable = nil }
+                    pendingCable = PendingCable(
+                        source: picked.source, sourceAnchor: anchor,
+                        current: world, strengthRaw: picked.strengthRaw)
                 } else {
                     draggedModule = (module.id, module.canvasPosition)
                     selection = module.id
@@ -576,7 +598,8 @@ struct PatchEditorView: View {
                 if let pending = pendingCable {
                     if let target = portHit(near: toWorld(value.location)),
                        !target.ref.type.isOutput {
-                        document.connect(from: pending.source, to: target.ref)
+                        document.connect(from: pending.source, to: target.ref,
+                                         strengthRaw: pending.strengthRaw)
                     }
                     pendingCable = nil
                 }
@@ -631,6 +654,21 @@ struct PatchEditorView: View {
                                  type: block.type),
                     anchor: anchor)
             }
+        }
+        return nil
+    }
+
+    /// World anchor of a port, for re-anchoring a picked-up cable at
+    /// its source end.
+    private func portAnchor(of ref: PortRef) -> CGPoint? {
+        guard let module = document.module(ref.module) else { return nil }
+        let blocks = module.activeBlocks(in: document.catalog)
+        for (row, block) in blocks.enumerated()
+        where (block.position ?? row) == ref.blockPosition
+            && block.type.isOutput == ref.type.isOutput {
+            return NodeMetrics.portAnchor(nodeOrigin: module.canvasPosition,
+                                          rowIndex: row,
+                                          isOutput: block.type.isOutput)
         }
         return nil
     }
@@ -1360,9 +1398,10 @@ struct CableLayer: View {
             let sample = CableAnimation.compress(viz[ago])
             let base = sampler.point(at: fraction)
             let normal = sampler.perpendicular(at: fraction)
+            let swing = CableAnimation.waveformAmplitude * zoom * CGFloat(sample)
             path.addLine(to: CGPoint(
-                x: base.x + normal.x * 10 * zoom * CGFloat(sample),
-                y: base.y + normal.y * 10 * zoom * CGFloat(sample)))
+                x: base.x + normal.x * swing,
+                y: base.y + normal.y * swing))
             distance += step
         }
         path.addLine(to: sampler.point(at: reversed ? 0 : 1))
@@ -1436,10 +1475,11 @@ struct CableLayer: View {
     }
 
     /// The Bespoke module halo: a rounded rect behind the node,
-    /// inflated by highlight × 40 world points with matching corner
-    /// growth, in the module's category color, brightening as the
-    /// highlight rises. Highlight peaks at 0.15, so the ring reaches
-    /// 6 world points — a pulse, not a flare.
+    /// inflated by highlight × highlightGrow world points with matching
+    /// corner growth, in the module's category color, brightening as
+    /// the highlight rises. Highlight peaks at 0.15, so the ring
+    /// reaches ~3.6 world points at glowPeakAlpha — a breath, not a
+    /// strobe.
     private func drawModuleGlow(_ module: CanvasModule, highlight: CGFloat,
                                 in context: inout GraphicsContext) {
         let blocks = module.activeBlocks(in: document.catalog)
@@ -1455,7 +1495,8 @@ struct CableLayer: View {
         let shape = Path(roundedRect: view, cornerRadius: (8 + grow) * zoom)
         let color = categoryStyle(document.catalog[module.typeID]?.category ?? "").header
         context.fill(shape,
-                     with: .color(color.opacity(min(highlight / 0.15, 1) * 0.85)))
+                     with: .color(color.opacity(
+                         min(highlight / 0.15, 1) * CableAnimation.glowPeakAlpha)))
     }
 
     /// Where a collapsed connector end shows its nodule: just off the

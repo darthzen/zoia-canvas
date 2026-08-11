@@ -10,9 +10,6 @@ struct CanvasModule: Identifiable, Sendable {
     var version: Int
     var page: Int
     var gridPosition: Int
-    /// A pinned module keeps its `gridPosition` through every reflow —
-    /// set by manual placement, and on import so authored layouts hold.
-    var gridPinned = false
     var colorID: Int
     var optionBytes: [UInt8]
     var paramsRaw: [Int]
@@ -84,7 +81,30 @@ final class PatchDocument {
 
     /// Bumped on any change that alters the runtime graph (modules,
     /// options, params, cables) so the audio engine knows to rebuild.
-    private(set) var structureRevision = 0
+    private(set) var structureRevision = 0 {
+        didSet { isEdited = true }
+    }
+
+    /// True whenever the document differs from its last save. Structure
+    /// changes set it via `structureRevision`; export-relevant changes
+    /// that don't touch the runtime graph (grid slots, pages, names,
+    /// colors) set it explicitly. Canvas positions never reach the
+    /// `.bin`, so canvas drags leave it alone.
+    private(set) var isEdited = false
+
+    func markSaved() { isEdited = false }
+
+    func setCustomName(_ id: UUID, to name: String) {
+        guard let index = modules.firstIndex(where: { $0.id == id }) else { return }
+        modules[index].customName = String(name.prefix(16))
+        isEdited = true
+    }
+
+    func setColorID(_ id: UUID, to color: Int) {
+        guard let index = modules.firstIndex(where: { $0.id == id }) else { return }
+        modules[index].colorID = color
+        isEdited = true
+    }
 
     @discardableResult
     func addModule(typeID: Int, at point: CGPoint) -> CanvasModule? {
@@ -94,7 +114,8 @@ final class PatchDocument {
             typeID: typeID,
             version: 0,
             page: 0,
-            gridPosition: 0,
+            // Born parked; settleGrid drains it into the first free run.
+            gridPosition: Self.pageButtonCount,
             colorID: 1,
             optionBytes: [UInt8](repeating: 0, count: 8),
             paramsRaw: [],
@@ -108,7 +129,7 @@ final class PatchDocument {
             repeating: 0, count: paramBlocks(of: module).count)
         modules.append(module)
         structureRevision += 1
-        reflowGrid()
+        settleGrid(page: module.page)
         resolvePageBoundaries()
         return modules.last
     }
@@ -135,7 +156,9 @@ final class PatchDocument {
                 || ($0.destModule == id && !valid.contains($0.destBlock))
         }
         structureRevision += 1
-        reflowGrid()   // options change the block count, so the span
+        // Options change the block count, so the span: the module keeps
+        // its slot and neighbors its new run covers step aside.
+        settleGrid(page: modules[index].page, anchor: id)
     }
 
     func setParam(_ id: UUID, paramIndex: Int, fraction: Double) {
@@ -146,10 +169,12 @@ final class PatchDocument {
     }
 
     func removeModule(_ id: UUID) {
+        let page = module(id)?.page
         modules.removeAll { $0.id == id }
         connections.removeAll { $0.sourceModule == id || $0.destModule == id }
         structureRevision += 1
-        reflowGrid()
+        // Freed buttons may recall this page's parked overflow.
+        if let page { settleGrid(page: page) }
         resolvePageBoundaries()
     }
 
@@ -157,7 +182,6 @@ final class PatchDocument {
         guard connections.contains(where: { $0.id == id }) else { return }
         connections.removeAll { $0.id == id }
         structureRevision += 1
-        reflowGrid()
     }
 
     func ruling(from source: PortRef, to dest: PortRef) -> ConnectionRuling {
@@ -182,11 +206,34 @@ final class PatchDocument {
                 destModule: dest.module, destBlock: dest.blockPosition,
                 strengthRaw: strengthRaw))
             structureRevision += 1
-            reflowGrid()   // a new cable can change flow order
         case .notOutputToInput, .sameModule, .duplicate:
             break
         }
         return ruling
+    }
+
+    /// Unplugs the newest cable feeding an input port and hands back
+    /// its far end, for the editor's pick-up-and-move gesture: the
+    /// caller re-connects it elsewhere (keeping strength) or lets the
+    /// drop on empty space stand as a disconnect.
+    func unplugConnection(into dest: PortRef) -> (
+        id: UUID, source: PortRef, strengthRaw: Int)? {
+        guard !dest.type.isOutput,
+              let index = connections.lastIndex(where: {
+                  $0.destModule == dest.module && $0.destBlock == dest.blockPosition
+              }) else { return nil }
+        let c = connections[index]
+        guard let sourceModule = module(c.sourceModule),
+              let block = sourceModule.activeBlocks(in: catalog).enumerated().first(where: {
+                  ($0.element.position ?? $0.offset) == c.sourceBlock
+                      && $0.element.type.isOutput
+              })?.element else { return nil }
+        connections.remove(at: index)
+        structureRevision += 1
+        return (c.id,
+                PortRef(module: c.sourceModule, blockPosition: c.sourceBlock,
+                        type: block.type),
+                c.strengthRaw)
     }
 
     func module(_ id: UUID) -> CanvasModule? {
@@ -291,6 +338,7 @@ final class PatchDocument {
         while pageNames.count <= index { pageNames.append("") }
         // The wire format stores 16 ASCII bytes.
         pageNames[index] = String(name.unicodeScalars.filter(\.isASCII).prefix(16))
+        isEdited = true
     }
 
     @discardableResult
@@ -298,6 +346,7 @@ final class PatchDocument {
         let index = pageCount
         guard index < ZoiaPatchBinary.maxPages else { return nil }
         while pageNames.count <= index { pageNames.append("") }
+        isEdited = true
         return index
     }
 
@@ -315,7 +364,12 @@ final class PatchDocument {
         // the renumbered pages, then let the normalizer close the gap.
         if index < pageOriginsX.count { pageOriginsX.remove(at: index) }
         resolvePageBoundaries()
-        reflowGrid()   // overflow is keyed by page index
+        // Overflow is keyed by page index; the removed page was empty,
+        // so the entries just shift down with their pages.
+        gridOverflow = Dictionary(uniqueKeysWithValues: gridOverflow.map {
+            ($0.key > index ? $0.key - 1 : $0.key, $0.value)
+        })
+        isEdited = true
         return true
     }
 
@@ -328,21 +382,28 @@ final class PatchDocument {
         // Keep the module's offset within its band across the move.
         let relative = modules[index].canvasPosition.x
             - pageOriginX(modules[index].page)
+        let oldPage = modules[index].page
         modules[index].page = page
         modules[index].canvasPosition.x = pageOriginX(page) + relative
-        // A pinned slot belongs to the page it was pinned on.
-        modules[index].gridPinned = false
+        // A slot belongs to the page it was placed on: enter the new
+        // page parked, and let the old page recall its overflow.
+        modules[index].gridPosition = Self.pageButtonCount
         resolvePageBoundaries()
-        reflowGrid()
+        settleGrid(page: oldPage)
+        settleGrid(page: page)
+        isEdited = true
     }
 
     // MARK: - Pedal grid placement
     //
     // The device shows each page as an 8×5 button grid; a module lights
-    // one button per active block from its gridPosition. The reflow
-    // below keeps every unpinned module's slot current after each
-    // structural change, so the minimap and export always describe the
-    // layout the pedal will actually show.
+    // one button per active block from its gridPosition. Placement is
+    // sticky: a slot is assigned once — on add, drop, or import — and
+    // held until the user drags the module or a neighbor's run claims
+    // its buttons (a drop landing on it, or a module growing new
+    // blocks). Displaced modules take the nearest free run; modules
+    // with no run left park past button 40 and re-enter the page when
+    // space frees.
 
     /// Buttons on one device page.
     static let pageButtonCount = 40
@@ -354,7 +415,7 @@ final class PatchDocument {
     }
 
     /// Modules that don't fit their page's 40 buttons, by page — filled
-    /// by `reflowGrid()`. Non-empty blocks export.
+    /// by `settleGrid(page:anchor:)`. Non-empty blocks export.
     private(set) var gridOverflow: [Int: [UUID]] = [:]
 
     /// Human-readable reasons export must refuse, one per full page.
@@ -372,100 +433,112 @@ final class PatchDocument {
         }
     }
 
-    /// Pins a module to a device-grid button and reflows the rest of
-    /// its page around it.
+    /// Places a module on a device-grid button. Whatever the new run
+    /// lands on steps aside; every other module keeps its slot.
     func setGridPosition(_ id: UUID, to position: Int) {
         guard let index = modules.firstIndex(where: { $0.id == id }),
               position >= 0, position < Self.pageButtonCount else { return }
         modules[index].gridPosition = position
-        modules[index].gridPinned = true
-        reflowGrid()
+        settleGrid(page: modules[index].page, anchor: id)
+        isEdited = true
     }
 
-    /// Returns a manually placed module to automatic flow placement.
-    func unpinGridPosition(_ id: UUID) {
-        guard let index = modules.firstIndex(where: { $0.id == id }) else { return }
-        modules[index].gridPinned = false
-        reflowGrid()
+    /// One page's slots keyed by module, for the inspector's drag
+    /// preview to snapshot before the first displacement.
+    func gridSnapshot(page: Int) -> [UUID: Int] {
+        Dictionary(uniqueKeysWithValues: modules(onPage: page).map { ($0.id, $0.gridPosition) })
     }
 
-    /// Assigns every unpinned module a device-grid slot, page by page:
-    /// signal-flow order (longest path from the page's sources, cycles
-    /// broken at the lowest array index; unwired modules follow in
-    /// array order — stable under canvas dragging), packed first-fit
-    /// around whatever is pinned. Modules that don't fit park past
-    /// button 40 — nothing overlaps, the minimap clips them, and
-    /// `gridOverflow` records the page as blocked.
-    ///
-    /// Pinned modules never move here. Two pinned modules may overlap
-    /// if the user (or an imported patch under a wrong span guess)
-    /// says so — authored placement outranks our occupancy model.
-    func reflowGrid() {
-        gridOverflow = [:]
-        let indexOf = Dictionary(uniqueKeysWithValues: modules.enumerated().map { ($1.id, $0) })
-        for page in 0..<pageCount {
-            let pageIndices = modules.indices.filter { modules[$0].page == page }
-            guard !pageIndices.isEmpty else { continue }
-            let onPage = Set(pageIndices)
-
-            var preds: [Int: Set<Int>] = [:]
-            var succs: [Int: Set<Int>] = [:]
-            for c in connections {
-                guard let s = indexOf[c.sourceModule], let d = indexOf[c.destModule],
-                      s != d, onPage.contains(s), onPage.contains(d) else { continue }
-                preds[d, default: []].insert(s)
-                succs[s, default: []].insert(d)
+    /// Rewinds slots to a drag snapshot. Each preview step re-derives
+    /// displacement from the pre-drag layout, so a neighbor nudged
+    /// aside returns the moment the drag moves elsewhere.
+    func restoreGridPositions(_ snapshot: [UUID: Int]) {
+        for i in modules.indices {
+            if let position = snapshot[modules[i].id] {
+                modules[i].gridPosition = position
             }
-            let wired = pageIndices.filter { preds[$0] != nil || succs[$0] != nil }
-            let unwired = pageIndices.filter { preds[$0] == nil && succs[$0] == nil }
+        }
+    }
 
-            var rank: [Int: Int] = [:]
-            var remaining = Set(wired)
-            while !remaining.isEmpty {
-                var ready = wired.filter { n in
-                    remaining.contains(n)
-                        && (preds[n] ?? []).allSatisfy { !remaining.contains($0) }
-                }
-                if ready.isEmpty {
-                    ready = [wired.first { remaining.contains($0) }!]
-                }
-                for n in ready {
-                    rank[n] = ((preds[n] ?? []).compactMap { rank[$0] }.max() ?? -1) + 1
-                    remaining.remove(n)
-                }
-            }
-            let order = wired.sorted { (rank[$0]!, $0) < (rank[$1]!, $1) } + unwired
+    /// Settles one page after a placement change. The anchor (just
+    /// dropped, or grown by an option change) keeps its run — clamped
+    /// to fit the page — and the modules that run now covers move to
+    /// the nearest free run. Parked modules re-enter wherever space
+    /// remains. A placed module the anchor doesn't touch never moves;
+    /// that includes imported overlaps, where authored placement
+    /// outranks our (unverified) span model.
+    private func settleGrid(page: Int, anchor: UUID? = nil) {
+        var occupied = [Bool](repeating: false, count: Self.pageButtonCount)
+        let pageIndices = modules.indices
+            .filter { modules[$0].page == page }
+            .sorted { (modules[$0].gridPosition, $0) < (modules[$1].gridPosition, $1) }
+        gridOverflow[page] = nil
+        var spill = Self.pageButtonCount
 
-            var occupied = [Bool](repeating: false, count: Self.pageButtonCount)
-            for n in pageIndices where modules[n].gridPinned {
-                // Some device patches place modules past button 40
-                // (e.g. Euroburo layouts); clamp instead of trusting it.
-                let start = max(modules[n].gridPosition, 0)
-                let end = min(start + buttonSpan(modules[n]), Self.pageButtonCount)
-                for b in start..<max(start, end) { occupied[b] = true }
+        var anchorRun: Range<Int>?
+        if let anchorIndex = pageIndices.first(where: { modules[$0].id == anchor }) {
+            let span = buttonSpan(modules[anchorIndex])
+            if span <= Self.pageButtonCount {
+                let start = min(max(modules[anchorIndex].gridPosition, 0),
+                                Self.pageButtonCount - span)
+                modules[anchorIndex].gridPosition = start
+                anchorRun = start..<(start + span)
+                for b in anchorRun! { occupied[b] = true }
+            } else {
+                // Wider than the whole page; park it and flag the page.
+                modules[anchorIndex].gridPosition = spill
+                spill += span
+                gridOverflow[page, default: []].append(modules[anchorIndex].id)
             }
-            var spill = Self.pageButtonCount
-            for n in order where !modules[n].gridPinned {
-                let span = buttonSpan(modules[n])
-                var start = 0
-                var placed = false
-                while start + span <= Self.pageButtonCount {
-                    let range = start..<(start + span)
-                    if range.allSatisfy({ !occupied[$0] }) {
-                        modules[n].gridPosition = start
-                        for b in range { occupied[b] = true }
-                        placed = true
-                        break
-                    }
-                    start += 1
-                }
-                if !placed {
-                    modules[n].gridPosition = spill
-                    spill += span
-                    gridOverflow[page, default: []].append(modules[n].id)
+        }
+
+        // Sticky pass: an untouched placed module keeps its run.
+        // Parked modules re-enter first-fit; modules under the anchor
+        // move to the free run nearest where they were.
+        var homeless: [(index: Int, preferred: Int)] = []
+        for n in pageIndices where modules[n].id != anchor {
+            let start = modules[n].gridPosition
+            let run = start..<(start + buttonSpan(modules[n]))
+            if start < 0 || run.upperBound > Self.pageButtonCount {
+                homeless.append((n, 0))
+            } else if let anchorRun, anchorRun.overlaps(run) {
+                homeless.append((n, start))
+            } else {
+                for b in run { occupied[b] = true }
+            }
+        }
+        for (n, preferred) in homeless {
+            let span = buttonSpan(modules[n])
+            if let start = nearestFreeRun(span: span, near: preferred, in: occupied) {
+                modules[n].gridPosition = start
+                for b in start..<(start + span) { occupied[b] = true }
+            } else {
+                // Park past button 40 on distinct spans, so nothing
+                // silently stacks; the minimap clips these and
+                // `gridOverflow` blocks export.
+                modules[n].gridPosition = spill
+                spill += span
+                gridOverflow[page, default: []].append(modules[n].id)
+            }
+        }
+    }
+
+    /// The free `span`-button run nearest `preferred`, ties toward the
+    /// page start.
+    private func nearestFreeRun(span: Int, near preferred: Int,
+                                in occupied: [Bool]) -> Int? {
+        let last = Self.pageButtonCount - span
+        guard last >= 0 else { return nil }
+        let clamped = min(max(preferred, 0), last)
+        for distance in 0...max(clamped, last - clamped) {
+            for start in [clamped - distance, clamped + distance]
+            where (0...last).contains(start) {
+                if (start..<(start + span)).allSatisfy({ !occupied[$0] }) {
+                    return start
                 }
             }
         }
+        return nil
     }
 
     // MARK: - .bin bridge
@@ -760,7 +833,6 @@ final class PatchDocument {
                 version: entry.version,
                 page: entry.page,
                 gridPosition: entry.position,
-                gridPinned: true,
                 colorID: index < patch.colors.count ? patch.colors[index] : entry.headerColorID,
                 optionBytes: entry.optionBytes,
                 paramsRaw: entry.paramsRaw,
@@ -777,12 +849,14 @@ final class PatchDocument {
                 strengthRaw: c.strengthRaw))
         }
         packImportedLayout(reserveCardCorridors: false)
-        reflowGrid()   // everything is pinned; this only surveys overflow
+        // Authored placement stays verbatim — including past button 40
+        // (Euroburo layouts): the device accepted it, so export stays
+        // open until an edit settles that page.
     }
 
     /// Builds the wire-format patch. Module order is canvas order;
-    /// placement copies each module's page and gridPosition, which the
-    /// live reflow keeps current. Callers must refuse to export while
+    /// placement copies each module's page and gridPosition, which
+    /// sticky placement keeps current. Callers must refuse to export while
     /// `gridExportBlockers` is non-empty — these positions are written
     /// verbatim, parked overflow included.
     func buildPatch() -> ZoiaPatch {

@@ -110,12 +110,12 @@ import Testing
     // MARK: - Cable animation math
 
     @Test func litWidthStartsThickAndDecays() {
-        // At elapsed 0 the pulse head is ~5× wide (2 + 3 ± 0.3 shimmer);
-        // by elapsed 1.43 the decay term is gone (2 ± 0.3).
+        // At elapsed 0 the pulse head is ~3.5× wide (2 + 1.5 ± 0.15
+        // shimmer); by elapsed 1.43 the decay term is gone (2 ± 0.15).
         let head = CableAnimation.litWidth(elapsed: 0, sinceEvent: 0)
-        #expect(abs(head - 5) <= 0.31)
+        #expect(abs(head - 3.5) <= 0.16)
         let tail = CableAnimation.litWidth(elapsed: 1.5, sinceEvent: 1.5 * 0.25)
-        #expect(abs(tail - 2) <= 0.31)
+        #expect(abs(tail - 2) <= 0.16)
     }
 
     @Test func compressIsSignedSqrt() {

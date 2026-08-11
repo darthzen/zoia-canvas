@@ -11,6 +11,8 @@ final class FileRequests {
     var openPanelTicket = 0
     /// Bumped by File > Export Patch… (⌘E) to show the save panel.
     var exportTicket = 0
+    /// Bumped by File > Save Patch (⌘S) to write back to the open file.
+    var saveTicket = 0
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -40,6 +42,8 @@ struct ZoiaCanvasApp: App {
             CommandGroup(after: .newItem) {
                 Button("Open Patch…") { requests.openPanelTicket += 1 }
                     .keyboardShortcut("o")
+                Button("Save Patch") { requests.saveTicket += 1 }
+                    .keyboardShortcut("s")
                 Button("Export Patch…") { requests.exportTicket += 1 }
                     .keyboardShortcut("e")
             }

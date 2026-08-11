@@ -6,6 +6,9 @@ struct ContentView: View {
 
     @State private var document: PatchDocument?
     @State private var selection: UUID?
+    /// Where Save writes: the opened file, or the home an untitled
+    /// patch picked in its first save panel.
+    @State private var fileURL: URL?
     @State private var loadError: String?
     @State private var showingImporter = false
     @State private var engine = AudioEngine()
@@ -44,6 +47,9 @@ struct ContentView: View {
         .onChange(of: requests.exportTicket) {
             if let document { exportBin(document) }
         }
+        .onChange(of: requests.saveTicket) {
+            if let document { saveBin(document) }
+        }
         .onChange(of: requests.pendingURL) {
             if let url = requests.pendingURL {
                 openBin(at: url)
@@ -57,7 +63,9 @@ struct ContentView: View {
             document = PatchDocument(catalog: try ModuleCatalog.loadBundled())
         } catch {
             loadError = "Module catalog failed to load: \(error)"
+            return
         }
+        restoreLastPatch()
     }
 
     private func editor(_ document: PatchDocument) -> some View {
@@ -76,7 +84,8 @@ struct ContentView: View {
                 InspectorView(document: document, moduleID: selected)
             }
         }
-        .navigationTitle(document.patchName)
+        .navigationTitle((document.patchName.isEmpty ? "Untitled" : document.patchName)
+            + (document.isEdited ? " *" : ""))
         // Drop a .bin anywhere on the window to open it. The palette's
         // module drags are plain-text payloads, so they never reach this
         // file-URL handler.
@@ -112,9 +121,14 @@ struct ContentView: View {
                         engine.start(document: document)
                     }
                 }
-                Button("Open…", systemImage: "square.and.arrow.down") {
+                Button("Open…", systemImage: "folder") {
                     showingImporter = true
                 }
+                Button("Save", systemImage: "square.and.arrow.down") {
+                    saveBin(document)
+                }
+                .disabled(!document.isEdited)
+                .help(document.isEdited ? "Save changes (⌘S)" : "No unsaved changes")
                 Button("Export…", systemImage: "square.and.arrow.up") {
                     exportBin(document)
                 }
@@ -170,9 +184,69 @@ struct ContentView: View {
             }
             document = loaded
             selection = nil
+            fileURL = url
+            rememberLastPatch(url)
         } catch {
             loadError = "\(url.lastPathComponent): \(error)"
         }
+    }
+
+    /// ⌘S: write back to the open file; an untitled patch picks its
+    /// home through the save panel once and saves silently after.
+    /// Export stays separate — it writes a copy without adopting it.
+    private func saveBin(_ document: PatchDocument) {
+        let blockers = document.gridExportBlockers
+        guard blockers.isEmpty else {
+            loadError = "Cannot save.\n" + blockers.joined(separator: "\n")
+            return
+        }
+        let url = fileURL ?? runSavePanel(document)
+        guard let url else { return }
+        do {
+            try document.encodeBin().write(to: url)
+            if document.patchName.isEmpty {
+                document.patchName = url.deletingPathExtension().lastPathComponent
+            }
+            fileURL = url
+            document.markSaved()
+            rememberLastPatch(url)
+        } catch {
+            loadError = "Save failed: \(error)"
+        }
+    }
+
+    private func runSavePanel(_ document: PatchDocument) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+        panel.nameFieldStringValue =
+            "\(document.patchName.isEmpty ? "patch" : document.patchName).bin"
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private static let lastPatchKey = "lastOpenedPatch"
+
+    /// Launch opens the last patch that was open, not an untitled one.
+    /// A bookmark (not a path) so the file is found again after a move;
+    /// the app is unsandboxed, so no security scope is involved.
+    private func rememberLastPatch(_ url: URL) {
+        if let data = try? url.bookmarkData() {
+            UserDefaults.standard.set(data, forKey: Self.lastPatchKey)
+        }
+    }
+
+    private func restoreLastPatch() {
+        guard let data = UserDefaults.standard.data(forKey: Self.lastPatchKey) else { return }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
+              FileManager.default.fileExists(atPath: url.path) else {
+            // The file is gone; forget it quietly rather than alerting
+            // on every launch until something else is opened.
+            UserDefaults.standard.removeObject(forKey: Self.lastPatchKey)
+            return
+        }
+        openBin(at: url)
+        if stale { rememberLastPatch(url) }
     }
 
     private func exportBin(_ document: PatchDocument) {
@@ -183,10 +257,7 @@ struct ContentView: View {
             loadError = "Cannot export.\n" + blockers.joined(separator: "\n")
             return
         }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
-        panel.nameFieldStringValue = "\(document.patchName.isEmpty ? "patch" : document.patchName).bin"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = runSavePanel(document) else { return }
         do {
             try document.encodeBin().write(to: url)
         } catch {

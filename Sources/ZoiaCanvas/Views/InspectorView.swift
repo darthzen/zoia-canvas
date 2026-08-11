@@ -10,6 +10,20 @@ struct InspectorView: View {
     /// Param value readout: raw 0…1 CV fraction, or the MIDI note the
     /// pitch mapping (fraction × 127) lands on. Persisted across launches.
     @AppStorage("paramDisplayNotes") private var showNoteNames = false
+    /// Live grid-drag state: the page's slots before the drag started,
+    /// which button of the module was grabbed, and the last previewed
+    /// target (to skip redundant re-settles).
+    @State private var dragSnapshot: [UUID: Int]?
+    @State private var dragGrabOffset = 0
+    @State private var dragPreviewCell: Int?
+
+    /// The module's index re-resolved at access time. Binding closures
+    /// escape and outlive a deletion by a frame — AppKit controls query
+    /// them while the panel tears down, so a captured index would
+    /// subscript past the end of `modules`.
+    private var liveIndex: Int? {
+        document.modules.firstIndex { $0.id == moduleID }
+    }
 
     var body: some View {
         if let index = document.modules.firstIndex(where: { $0.id == moduleID }),
@@ -32,12 +46,12 @@ struct InspectorView: View {
             Text(spec.name)
                 .font(.headline)
             TextField("Custom name", text: Binding(
-                get: { document.modules[index].customName },
-                set: { document.modules[index].customName = String($0.prefix(16)) }))
+                get: { liveIndex.map { document.modules[$0].customName } ?? "" },
+                set: { document.setCustomName(moduleID, to: $0) }))
                 .textFieldStyle(.roundedBorder)
             Picker("Color", selection: Binding(
-                get: { document.modules[index].colorID },
-                set: { document.modules[index].colorID = $0 })) {
+                get: { liveIndex.map { document.modules[$0].colorID } ?? 1 },
+                set: { document.setColorID(moduleID, to: $0) })) {
                 ForEach(1...15, id: \.self) { code in
                     HStack {
                         Circle().fill(zoiaColor(code)).frame(width: 10, height: 10)
@@ -47,7 +61,7 @@ struct InspectorView: View {
                 }
             }
             Picker("Page", selection: Binding(
-                get: { document.modules[index].page },
+                get: { liveIndex.map { document.modules[$0].page } ?? 0 },
                 set: { document.moveModule(moduleID, toPage: $0) })) {
                 ForEach(0..<document.pageCount, id: \.self) { page in
                     let name = document.pageName(page)
@@ -64,9 +78,9 @@ struct InspectorView: View {
     }
 
     /// The module's page as the pedal shows it: 8×5 buttons, every
-    /// module in its live grid slot. Clicking a button moves this
-    /// module there and pins it; the rest of the page reflows around
-    /// it. Unpin hands the slot back to automatic flow placement.
+    /// module in its live grid slot. Drag (or click) to place this
+    /// module; whatever the drop lands on steps aside, and placement
+    /// is sticky — nothing else moves.
     private func gridSection(index: Int) -> some View {
         let module = document.modules[index]
         let span = document.buttonSpan(module)
@@ -74,15 +88,6 @@ struct InspectorView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Grid").font(.subheadline.bold())
-                if module.gridPinned {
-                    Image(systemName: "pin.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .help("Pinned — reflow keeps this placement")
-                    Button("Unpin") { document.unpinGridPosition(moduleID) }
-                        .font(.caption)
-                        .buttonStyle(.link)
-                }
                 Spacer()
                 Text("\(span) button\(span == 1 ? "" : "s")")
                     .font(.caption2)
@@ -118,14 +123,52 @@ struct InspectorView: View {
                                 .strokeBorder(mine.contains(cell) ? Color.accentColor : .clear,
                                               lineWidth: 1.5))
                             .frame(width: 22, height: 16)
-                            .onTapGesture {
-                                document.setGridPosition(moduleID, to: cell)
-                            }
                     }
                 }
             }
         }
-        .help("Click a button to pin \(module.customName.isEmpty ? "this module" : module.customName) there")
+        .contentShape(Rectangle())
+        .gesture(gridDragGesture(module: module, span: span))
+        .help("Drag \(module.customName.isEmpty ? "this module" : module.customName) to a button; whatever it lands on steps aside")
+    }
+
+    /// The button under a point, mirroring the Grid above: 22×16 cells
+    /// on 3pt spacing.
+    private func gridCell(at point: CGPoint) -> Int {
+        let col = min(max(Int(point.x / 25), 0), 7)
+        let row = min(max(Int(point.y / 19), 0), 4)
+        return row * 8 + col
+    }
+
+    /// Drag (a click is the zero-distance case) to place the module.
+    /// Every step rewinds to the pre-drag snapshot before re-placing,
+    /// so a neighbor pushed aside returns the moment the drag moves
+    /// elsewhere; release keeps whatever the preview shows.
+    private func gridDragGesture(module: CanvasModule, span: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if dragSnapshot == nil {
+                    dragSnapshot = document.gridSnapshot(page: module.page)
+                    // Grabbing one of the module's own buttons drags by
+                    // that button, not by its first block.
+                    let start = gridCell(at: value.startLocation)
+                    let run = module.gridPosition..<(module.gridPosition + span)
+                    dragGrabOffset = run.contains(start) ? start - module.gridPosition : 0
+                }
+                let target = min(max(gridCell(at: value.location) - dragGrabOffset, 0),
+                                 max(PatchDocument.pageButtonCount - span, 0))
+                guard target != dragPreviewCell else { return }
+                if let snapshot = dragSnapshot {
+                    document.restoreGridPositions(snapshot)
+                }
+                document.setGridPosition(moduleID, to: target)
+                dragPreviewCell = target
+            }
+            .onEnded { _ in
+                dragSnapshot = nil
+                dragPreviewCell = nil
+                dragGrabOffset = 0
+            }
     }
 
     @ViewBuilder
@@ -135,7 +178,9 @@ struct InspectorView: View {
                 Text("Options").font(.subheadline.bold())
                 ForEach(Array(spec.options.enumerated()), id: \.offset) { optIndex, option in
                     Picker(option.key, selection: Binding(
-                        get: { Int(document.modules[index].optionBytes[optIndex]) },
+                        get: {
+                            liveIndex.map { Int(document.modules[$0].optionBytes[optIndex]) } ?? 0
+                        },
                         set: { document.setOption(moduleID, optionIndex: optIndex, byte: UInt8($0)) })) {
                         ForEach(Array(option.values.enumerated()), id: \.offset) { valueIndex, value in
                             Text(value.description).tag(valueIndex)
@@ -171,15 +216,9 @@ struct InspectorView: View {
                             .frame(width: 90, alignment: .leading)
                             .lineLimit(1)
                         Slider(value: Binding(
-                            get: {
-                                paramIndex < document.modules[index].paramsRaw.count
-                                    ? Double(document.modules[index].paramsRaw[paramIndex]) / 65535
-                                    : 0
-                            },
+                            get: { paramFraction(paramIndex) },
                             set: { document.setParam(moduleID, paramIndex: paramIndex, fraction: $0) }))
-                        Text(valueLabel(
-                            paramIndex < document.modules[index].paramsRaw.count
-                                ? Double(document.modules[index].paramsRaw[paramIndex]) / 65535 : 0))
+                        Text(valueLabel(paramFraction(paramIndex)))
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 30)
@@ -187,6 +226,15 @@ struct InspectorView: View {
                 }
             }
         }
+    }
+
+    /// Param read that survives the module's deletion — the ForEach row
+    /// re-evaluates lazily and its captured index dies with the module;
+    /// see `liveIndex`.
+    private func paramFraction(_ paramIndex: Int) -> Double {
+        guard let i = liveIndex, paramIndex < document.modules[i].paramsRaw.count
+        else { return 0 }
+        return Double(document.modules[i].paramsRaw[paramIndex]) / 65535
     }
 
     private func valueLabel(_ fraction: Double) -> String {

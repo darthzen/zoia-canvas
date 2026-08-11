@@ -121,11 +121,13 @@ enum CableAnimation {
     /// fixed at Bespoke's default 120 BPM 4/4 bar.
     static let barSeconds = 2.0
 
-    /// Line width of a lit gate segment (PatchCable.cpp:260): starts 5×,
-    /// decays to 2×, with a bar-synced cosine shimmer on top.
+    /// Line width of a lit gate segment, after Bespoke
+    /// (PatchCable.cpp:260) but at half its swell — Bespoke starts 5×
+    /// and reads as a strobe on a running clock; this starts ~3.5×,
+    /// decays to 2×, with a gentler bar-synced cosine shimmer on top.
     static func litWidth(elapsed: Double, sinceEvent: Double) -> Double {
-        2 + min(max(1 - elapsed * 0.7, 0), 1) * 3
-            + cos(sinceEvent * .pi * 8 / barSeconds) * 0.3
+        2 + min(max(1 - elapsed * 0.7, 0), 1) * 1.5
+            + cos(sinceEvent * .pi * 8 / barSeconds) * 0.15
     }
 
     /// Audio sample → cable displacement fraction: signed square root
@@ -141,9 +143,20 @@ enum CableAnimation {
         abs(1 - (1 - delta) * (1 - delta)) * (150.0 / 255.0)
     }
 
-    /// Bespoke kHighlightGrowAmount: world points a module frame
-    /// inflates per unit of highlight.
-    static let highlightGrow: CGFloat = 40
+    /// World points of perpendicular cable displacement at full
+    /// amplitude. Bespoke draws 10; that dominates the canvas, so the
+    /// wire carries the waveform at less than half that height.
+    static let waveformAmplitude: CGFloat = 4
+
+    /// World points a module frame inflates per unit of highlight —
+    /// Bespoke's kHighlightGrowAmount is 40; softened so the peak ring
+    /// is ~3.6 points instead of 6.
+    static let highlightGrow: CGFloat = 24
+
+    /// Peak opacity of the module glow. Bespoke flashes at 0.85, which
+    /// reads as a hard strobe on every clock tick; the glow tops out
+    /// well under half that.
+    static let glowPeakAlpha: Double = 0.35
 }
 
 /// Arc-length parameterization of a cable path, so pulses travel at

@@ -4,9 +4,10 @@ import Testing
 
 private final class CorpusLocator {}
 
-/// The live pedal-grid reflow: canvas-authored modules always hold
-/// real, disjoint button runs; pinned placements survive; full pages
-/// report overflow and block export; imported layouts never move.
+/// Sticky pedal-grid placement: a slot is assigned once and held; only
+/// a drop or a growing neighbor moves a module, and only the modules
+/// that run actually covers; full pages report overflow and block
+/// export; imported layouts never move.
 @Suite @MainActor struct GridPlacementTests {
     private func catalog() throws -> ModuleCatalog {
         try ModuleCatalog.loadBundled()
@@ -33,43 +34,86 @@ private final class CorpusLocator {}
         }
     }
 
-    @Test func autoPlacementFollowsSignalFlow() throws {
+    @Test func newModulesPackWithoutMovingAnyone() throws {
         let document = PatchDocument(catalog: try catalog())
         // Audio input (1) → SV filter (0) → audio output (2).
         let input = try #require(document.addModule(typeID: 1, at: .zero))
         let filter = try #require(document.addModule(typeID: 0, at: .zero))
         let output = try #require(document.addModule(typeID: 2, at: .zero))
+        expectDisjointRuns(document)
+        #expect(document.gridOverflow.isEmpty)
+
+        // Cables never move placement — slots are sticky.
+        let before = document.modules.map(\.gridPosition)
         document.connect(from: try port(input, in: document, output: true),
                          to: try port(filter, in: document, output: false))
         document.connect(from: try port(filter, in: document, output: true),
                          to: try port(output, in: document, output: false))
-
-        let byID = Dictionary(uniqueKeysWithValues: document.modules.map { ($0.id, $0) })
-        let inputPos = try #require(byID[input.id]).gridPosition
-        let filterPos = try #require(byID[filter.id]).gridPosition
-        let outputPos = try #require(byID[output.id]).gridPosition
-        #expect(inputPos < filterPos, "signal flow orders the grid")
-        #expect(filterPos < outputPos, "signal flow orders the grid")
-        expectDisjointRuns(document)
-        #expect(document.gridOverflow.isEmpty)
-        #expect(document.gridExportBlockers.isEmpty)
+        #expect(document.modules.map(\.gridPosition) == before)
     }
 
-    @Test func pinnedPlacementSurvivesReflow() throws {
+    @Test func manualPlacementSticks() throws {
         let document = PatchDocument(catalog: try catalog())
-        let pinned = try #require(document.addModule(typeID: 0, at: .zero))
-        document.setGridPosition(pinned.id, to: 10)
+        let placed = try #require(document.addModule(typeID: 0, at: .zero))
+        document.setGridPosition(placed.id, to: 10)
         _ = try #require(document.addModule(typeID: 1, at: .zero))
         _ = try #require(document.addModule(typeID: 2, at: .zero))
 
-        let after = try #require(document.module(pinned.id))
-        #expect(after.gridPinned)
-        #expect(after.gridPosition == 10, "pin holds through reflow")
+        let after = try #require(document.module(placed.id))
+        #expect(after.gridPosition == 10, "new modules flow around a placed one")
         expectDisjointRuns(document)
+    }
 
-        document.unpinGridPosition(pinned.id)
-        let unpinned = try #require(document.module(pinned.id))
-        #expect(unpinned.gridPinned == false)
+    @Test func dropDisplacesOnlyWhatItHits() throws {
+        let document = PatchDocument(catalog: try catalog())
+        let a = try #require(document.addModule(typeID: 1, at: .zero))
+        let b = try #require(document.addModule(typeID: 1, at: .zero))
+        let c = try #require(document.addModule(typeID: 1, at: .zero))
+        let aPos = try #require(document.module(a.id)).gridPosition
+        let cPos = try #require(document.module(c.id)).gridPosition
+
+        document.setGridPosition(b.id, to: aPos)
+        #expect(try #require(document.module(b.id)).gridPosition == aPos,
+                "the drop wins the contested run")
+        #expect(try #require(document.module(a.id)).gridPosition != aPos,
+                "the module underneath steps aside")
+        #expect(try #require(document.module(c.id)).gridPosition == cPos,
+                "an untouched module never moves")
+        expectDisjointRuns(document)
+    }
+
+    @Test func dragSnapshotRestores() throws {
+        let document = PatchDocument(catalog: try catalog())
+        let a = try #require(document.addModule(typeID: 1, at: .zero))
+        let b = try #require(document.addModule(typeID: 1, at: .zero))
+        let snapshot = document.gridSnapshot(page: 0)
+        let aPos = try #require(document.module(a.id)).gridPosition
+
+        // Preview a displacing drop, then rewind — the inspector drag
+        // does this every step, so nudged neighbors return.
+        document.setGridPosition(b.id, to: aPos)
+        document.restoreGridPositions(snapshot)
+        #expect(document.gridSnapshot(page: 0) == snapshot)
+        expectDisjointRuns(document)
+    }
+
+    @Test func growingModuleDisplacesItsNeighbor() throws {
+        let document = PatchDocument(catalog: try catalog())
+        // Sequencer (4): number_of_steps is option 0 and adds a block
+        // per step.
+        let sequencer = try #require(document.addModule(typeID: 4, at: .zero))
+        let neighbor = try #require(document.addModule(typeID: 1, at: .zero))
+        let seqPos = try #require(document.module(sequencer.id)).gridPosition
+        let neighborPos = try #require(document.module(neighbor.id)).gridPosition
+        let grown = document.buttonSpan(try #require(document.module(sequencer.id))) + 7
+        document.setOption(sequencer.id, optionIndex: 0, byte: 7)   // 8 steps
+
+        let seqAfter = try #require(document.module(sequencer.id))
+        #expect(document.buttonSpan(seqAfter) >= grown - 1,
+                "steps grew the span")
+        #expect(seqAfter.gridPosition == seqPos, "the grown module holds its slot")
+        #expect(try #require(document.module(neighbor.id)).gridPosition != neighborPos,
+                "the covered neighbor steps aside")
         expectDisjointRuns(document)
     }
 
@@ -90,15 +134,32 @@ private final class CorpusLocator {}
         })
     }
 
-    @Test func importPinsAuthoredPlacement() throws {
+    @Test func deletionRecallsParkedModules() throws {
+        let document = PatchDocument(catalog: try catalog())
+        var first: CanvasModule?
+        var added = 0
+        while document.gridOverflow.isEmpty && added < 60 {
+            let module = try #require(document.addModule(typeID: 1, at: .zero))
+            if first == nil { first = module }
+            added += 1
+        }
+        #expect(!document.gridOverflow.isEmpty)
+
+        document.removeModule(try #require(first).id)
+        #expect(document.gridOverflow.isEmpty,
+                "freed buttons recall the parked module")
+        expectDisjointRuns(document)
+    }
+
+    @Test func importKeepsAuthoredPlacement() throws {
         let bundle = Bundle(for: CorpusLocator.self)
         let root = try #require(bundle.resourceURL?.appendingPathComponent("Corpus"))
         let patch = try ZoiaPatchBinary.decode(try Data(contentsOf:
             root.appendingPathComponent("Factory/023_zoia_Snowfall.bin")))
         let document = PatchDocument(patch: patch, catalog: try catalog())
-        let allPinned = document.modules.allSatisfy { $0.gridPinned }
-        #expect(allPinned)
         #expect(document.modules.map(\.gridPosition) == patch.modules.map(\.position),
-                "imported placement is authored data — reflow must not touch it")
+                "imported placement is authored data — nothing may touch it")
+        #expect(document.gridExportBlockers.isEmpty,
+                "what the device produced must round-trip")
     }
 }
