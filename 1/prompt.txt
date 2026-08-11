@@ -47,3 +47,15 @@ The keyboarfd shortcuts documentation isn't necessary. Those are standard system
 ---
 
 Let's do full workspace restore
+
+---
+
+Commit and push.
+
+---
+
+If I want to connect two controls on different pages, how do I do that in the interface?
+
+---
+
+Let's make this a 1.0 release and make this public.
