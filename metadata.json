@@ -3,7 +3,7 @@
   "checkpoint_id": "01KZS1GB0ZN7NE2H9SB6BRFTKQ",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 9,
   "files_touched": [
     "Sources/ZoiaCanvas/Audio/SignalTap.swift",
     "Sources/ZoiaCanvas/ContentView.swift",
@@ -11,7 +11,9 @@
     "Sources/ZoiaCanvas/Views/InspectorView.swift",
     "Sources/ZoiaCanvas/Views/PatchEditorView.swift",
     "Sources/ZoiaCanvas/ZoiaCanvasApp.swift",
+    "Tests/ZoiaCanvasTests/CableReconnectTests.swift",
     "Tests/ZoiaCanvasTests/GridPlacementTests.swift",
+    "Tests/ZoiaCanvasTests/InspectorTeardownTests.swift",
     "Tests/ZoiaCanvasTests/SignalTapTests.swift"
   ],
   "sessions": [
@@ -21,13 +23,20 @@
       "compact_transcript": "/0/transcript.jsonl",
       "content_hash": "/0/content_hash.txt",
       "prompt": "/0/prompt.txt"
+    },
+    {
+      "metadata": "/1/metadata.json",
+      "transcript": "/1/full.jsonl",
+      "compact_transcript": "/1/transcript.jsonl",
+      "content_hash": "/1/content_hash.txt",
+      "prompt": "/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 25,
-    "cache_creation_tokens": 77665,
-    "cache_read_tokens": 818574,
-    "output_tokens": 8504,
-    "api_call_count": 13
+    "input_tokens": 231,
+    "cache_creation_tokens": 443495,
+    "cache_read_tokens": 14986441,
+    "output_tokens": 132993,
+    "api_call_count": 99
   }
 }
