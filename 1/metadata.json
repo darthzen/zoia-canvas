@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "01KZS9NXRNHHBE7C574ENB05V2",
+  "session_id": "d48f913d-8ce5-4cf1-bb5c-334eefb1b6b2",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-11T20:54:33.50555Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 1,
+  "files_touched": [
+    "project.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "549f7c892358",
+  "checkpoint_transcript_start": 361,
+  "transcript_lines_at_start": 361,
+  "compact_transcript_start": 69,
+  "token_usage": {
+    "input_tokens": 20,
+    "cache_creation_tokens": 11258,
+    "cache_read_tokens": 1619720,
+    "output_tokens": 5455,
+    "api_call_count": 11
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01EqBHXoXxDuDzS5c9DsBFQs",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "rick-preferences"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "549f7c892358",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 23,
+        "end": 24,
+        "entry_ids": [
+          "5c134ef7-588a-489e-b0c1-c6d82bcf7846"
+        ],
+        "tool_use_id": "toolu_01EqBHXoXxDuDzS5c9DsBFQs"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01EqBHXoXxDuDzS5c9DsBFQs"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: rick-preferences",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-11T20:54:33.476569Z",
+    "agent_lines": 4,
+    "agent_removed": 2,
+    "human_added": 124,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 128,
+    "total_lines_changed": 130,
+    "agent_percentage": 4.615384615384616,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
