@@ -1,0 +1,110 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "01KZS1GB0ZN7NE2H9SB6BRFTKQ",
+  "session_id": "d48f913d-8ce5-4cf1-bb5c-334eefb1b6b2",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-11T18:31:38.592945Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "Sources/ZoiaCanvas/Audio/SignalTap.swift",
+    "Sources/ZoiaCanvas/ContentView.swift",
+    "Sources/ZoiaCanvas/Model/PatchDocument.swift",
+    "Sources/ZoiaCanvas/Views/InspectorView.swift",
+    "Sources/ZoiaCanvas/Views/PatchEditorView.swift",
+    "Sources/ZoiaCanvas/ZoiaCanvasApp.swift",
+    "Tests/ZoiaCanvasTests/GridPlacementTests.swift",
+    "Tests/ZoiaCanvasTests/SignalTapTests.swift"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "58e21143c36a",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 25,
+    "cache_creation_tokens": 77665,
+    "cache_read_tokens": 818574,
+    "output_tokens": 8504,
+    "api_call_count": 13
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01EqBHXoXxDuDzS5c9DsBFQs",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "rick-preferences"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "58e21143c36a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 23,
+        "end": 24,
+        "entry_ids": [
+          "5c134ef7-588a-489e-b0c1-c6d82bcf7846"
+        ],
+        "tool_use_id": "toolu_01EqBHXoXxDuDzS5c9DsBFQs"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01EqBHXoXxDuDzS5c9DsBFQs"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: rick-preferences",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-11T18:31:38.579002Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 192,
+    "total_committed": 0,
+    "total_lines_changed": 192,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 623,
+      "user_lines_removed": 192,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "Sources/ZoiaCanvas/Audio/SignalTap.swift": 20,
+        "Sources/ZoiaCanvas/ContentView.swift": 77,
+        "Sources/ZoiaCanvas/Model/PatchDocument.swift": 175,
+        "Sources/ZoiaCanvas/Views/InspectorView.swift": 78,
+        "Sources/ZoiaCanvas/Views/PatchEditorView.swift": 58,
+        "Sources/ZoiaCanvas/ZoiaCanvasApp.swift": 4,
+        "Tests/ZoiaCanvasTests/CableReconnectTests.swift": 88,
+        "Tests/ZoiaCanvasTests/GridPlacementTests.swift": 88,
+        "Tests/ZoiaCanvasTests/InspectorTeardownTests.swift": 31,
+        "Tests/ZoiaCanvasTests/SignalTapTests.swift": 4
+      },
+      "user_removed_per_file": {
+        "Sources/ZoiaCanvas/Audio/SignalTap.swift": 7,
+        "Sources/ZoiaCanvas/ContentView.swift": 6,
+        "Sources/ZoiaCanvas/Model/PatchDocument.swift": 101,
+        "Sources/ZoiaCanvas/Views/InspectorView.swift": 30,
+        "Sources/ZoiaCanvas/Views/PatchEditorView.swift": 17,
+        "Tests/ZoiaCanvasTests/GridPlacementTests.swift": 27,
+        "Tests/ZoiaCanvasTests/SignalTapTests.swift": 4
+      }
+    }
+  ]
+}
