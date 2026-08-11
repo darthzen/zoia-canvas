@@ -31,3 +31,7 @@ Create a patch that has all the animations in it. Another change that I see is t
 ---
 
 Move AnimationDemo.bin to my Desktop
+
+---
+
+Excellent. I think we're good on animations. Let's commit and push
