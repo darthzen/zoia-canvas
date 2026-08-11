@@ -1,0 +1,49 @@
+There was supposed to have been logic added in a recent session to be able to map out the placement of the modules on the Zoia LED grid. It looks, based on the preview visualization for page 1, like it's doing auto-assignment, which is fine, but how do I edit that?
+
+---
+
+What's missing is the ability to drag to the grid location I want. I also don't like the idea of pinning it. If it's been placed somewhere, either manually or automatically, it doesn't get moved around. The exception is that if you drag something into a place that overlaps it, it moves out of the way (and returns to its spot if you move your placement elsewhere). Similarly, if an object next to it has additional parameters enabled (and thus more LEDs on the grid), it should move out of the way to accommodate that. I also noticed that if I highlight an element and use the Cmd+Del keyboard shortcut, the inspector on the right goes away, but the module itself stays. It won't delete unless I right-click and delete.
+
+---
+
+I tried to delete with the shortcut and it threw an index out of range error.
+
+Swift/ContiguousArrayBuffer.swift:695: Fatal error: Index out of range
+Type: stdio
+
+---
+
+Swift/ContiguousArrayBuffer.swift:695: Fatal error: Index out of range
+Type: stdio
+
+---
+
+That looks like it's working. Next up, I like the animations, but they need to be a little bit more subtle. The sine waves on the audio wires, for example, are too big. The pulsing that's happening on the clock is hard and jarring.
+
+---
+
+Much better. Good work. Are there other animations that I should see to judge whether they need similar adjustment?
+
+---
+
+Create a patch that has all the animations in it. Another change that I see is that I need to be able to drag/disconnect the wires from one element and move them to another. For example, I added an audio panner and wanted to move the vca output going to the speakers over to the panner instead, and that wasn't possible. It required a delete
+
+---
+
+Move AnimationDemo.bin to my Desktop
+
+---
+
+Excellent. I think we're good on animations. Let's commit and push
+
+---
+
+The README currently is aimed for an audience of developers wanting to rebuild it. Let's change it to be one aimed at end-users with feature overview, instructions on use, screenshots, etc.
+
+---
+
+The keyboarfd shortcuts documentation isn't necessary. Those are standard system commands. Also, export is if you're changing formats. What you described is "Save As". We also need to implement "New" and both of these need their keyboard shortcuts. Also, if I open a different patch, it should open in a separate window (the user may want to compare them). It's only when you have an empty, untitled project that an open would take the place. Also, the window needs to remember its position and layout if I resize and then close. And, if the user adjusts the patch layout to what they want to see, it should persist that for the next time it opens as well.
+
+---
+
+Let's do full workspace restore
