@@ -1,6 +1,7 @@
 # Xcode
 ZoiaCanvas.xcodeproj/
 build/
+dist/
 DerivedData/
 *.xcuserstate
 xcuserdata/

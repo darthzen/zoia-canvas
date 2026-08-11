@@ -1,6 +1,6 @@
 name: ZoiaCanvas
 options:
-  bundleIdPrefix: org.theashfords
+  bundleIdPrefix: ash4d
   createIntermediateGroups: true
   deploymentTarget:
     macOS: "15.0"
@@ -37,10 +37,12 @@ targets:
               - com.apple.macbinary-archive
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.theashfords.ZoiaCanvas
+        PRODUCT_BUNDLE_IDENTIFIER: ash4d.ZoiaCanvas
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_IDENTITY: "-"
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": "Mac Developer"
+        "DEVELOPMENT_TEAM[sdk=macosx*]": 5YR793D4UZ
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_STRICT_CONCURRENCY: complete
