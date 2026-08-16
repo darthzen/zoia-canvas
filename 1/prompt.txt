@@ -1,0 +1,1 @@
+Read your handoff, then I want to create a patch for my zoia that will do midi to cv conversion for me.
