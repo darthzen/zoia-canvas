@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "01M06CDBN0ENH8CW7Z391CEX8R",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "Sources/ZoiaCanvas/ContentView.swift",
+    "Sources/ZoiaCanvas/Format/ZoiaPatch.swift",
+    "Sources/ZoiaCanvas/Model/PatchDocument.swift",
+    "Sources/ZoiaCanvas/Model/PatchLayoutStore.swift",
+    "Sources/ZoiaCanvas/PatchSession.swift",
+    "Tests/ZoiaCanvasTests/PatchNamingTests.swift"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 145,
+    "cache_creation_tokens": 434269,
+    "cache_read_tokens": 10164171,
+    "output_tokens": 56050,
+    "api_call_count": 76
+  }
+}

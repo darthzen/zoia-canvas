@@ -1,0 +1,9 @@
+If a patch I'm working on is named Untitled and never been saved, then the patch being saved needs to ask for a name from the user and do a Save As, but keep that as the open patch with the new name.
+
+---
+
+Before you get to working, I misread your explanation on the name. So, the filename should be derived from the internal name. I guess it should default to patch 001 unless the user specifies otherwise when they save.
+
+---
+
+/handoff
