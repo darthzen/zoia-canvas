@@ -61,7 +61,10 @@ enum ConnectionRuling: Equatable, Sendable {
 @MainActor
 final class PatchDocument {
     let catalog: ModuleCatalog
-    var patchName: String
+    /// What the device's patch menu shows. Held to the header's 16 bytes
+    /// at every entry point so the title bar can never promise a name
+    /// the export would truncate.
+    private(set) var patchName: String
     var modules: [CanvasModule] = []
     var connections: [CanvasConnection] = []
     var pageNames: [String] = []
@@ -98,6 +101,21 @@ final class PatchDocument {
     private(set) var isEdited = false
 
     func markSaved() { isEdited = false }
+
+    /// Renaming from the title bar. The name is exported, so this is an
+    /// edit even though nothing in the runtime graph moved.
+    func setPatchName(_ name: String) {
+        let clamped = ZoiaPatchNaming.clamp(name)
+        guard clamped != patchName else { return }
+        patchName = clamped
+        isEdited = true
+    }
+
+    /// Taking a name from a file that was opened or saved. Same clamp,
+    /// but the document is in step with disk afterwards, not ahead of it.
+    func adoptPatchName(_ name: String) {
+        patchName = ZoiaPatchNaming.clamp(name)
+    }
 
     func setCustomName(_ id: UUID, to name: String) {
         guard let index = modules.firstIndex(where: { $0.id == id }) else { return }
@@ -824,7 +842,7 @@ final class PatchDocument {
 
     convenience init(patch: ZoiaPatch, catalog: ModuleCatalog) {
         self.init(catalog: catalog)
-        patchName = patch.name
+        adoptPatchName(patch.name)
         pageNames = patch.pageNames
         starred = patch.starred
 

@@ -26,7 +26,14 @@ final class PatchSession: Identifiable {
 
     func adoptWindow(_ window: NSWindow?) {
         self.window = window
+        reflectEditedState(document?.isEdited ?? false)
         applyPendingFrame()
+    }
+
+    /// Unsaved state shows as the standard dot in the close button; the
+    /// title bar is spoken for by the editable patch name.
+    func reflectEditedState(_ edited: Bool) {
+        window?.isDocumentEdited = edited
     }
 
     /// Schedules a frame from the stored workspace; applied as soon as
@@ -72,8 +79,11 @@ final class PatchSession: Identifiable {
         do {
             let patch = try ZoiaPatchBinary.decode(Data(contentsOf: url))
             let loaded = PatchDocument(patch: patch, catalog: current.catalog)
+            // Blank header name (factory patches ship a few): fall back
+            // to the filename, which carries the same name by convention.
             if loaded.patchName.isEmpty {
-                loaded.patchName = url.deletingPathExtension().lastPathComponent
+                loaded.adoptPatchName(
+                    ZoiaPatchNaming.patchName(fromFileName: url.lastPathComponent))
             }
             if let layout = PatchLayoutStore.load(for: url) {
                 PatchLayoutStore.apply(layout, to: loaded)
@@ -86,51 +96,125 @@ final class PatchSession: Identifiable {
         }
     }
 
+    // MARK: - Rename
+
+    private enum RenameChoice {
+        case renameFile, saveAsNew, cancel
+    }
+
+    /// Renaming from the title bar. An unsaved patch just takes the new
+    /// name; a patch that already has a file on disk raises the question
+    /// the user is actually asking — is this the same patch under a new
+    /// name, or a new patch? Nothing is changed until they answer.
+    func rename(to name: String) {
+        guard let document else { return }
+        let clamped = ZoiaPatchNaming.clamp(name)
+        guard clamped != document.patchName else { return }
+        guard let fileURL else { return document.setPatchName(clamped) }
+
+        switch Self.confirmRename(from: document.patchName, to: clamped, file: fileURL) {
+        case .cancel:
+            return
+        case .saveAsNew:
+            document.setPatchName(clamped)
+            saveAs()
+        case .renameFile:
+            document.setPatchName(clamped)
+            renameOnDisk(document, from: fileURL, to: clamped)
+        }
+    }
+
+    private static func confirmRename(from oldName: String, to newName: String,
+                                      file: URL) -> RenameChoice {
+        let alert = NSAlert()
+        alert.messageText = "Rename “\(oldName)” to “\(newName)”?"
+        // The name is bytes inside the patch, not just a label on the
+        // file, so either answer rewrites the file — worth saying plainly.
+        alert.informativeText = """
+            The ZOIA reads the name from inside the patch, so \
+            \(file.lastPathComponent) has to be written out again either way. \
+            Renaming replaces it; saving as a new patch leaves it as it is.
+            """
+        alert.addButton(withTitle: "Rename File")
+        alert.addButton(withTitle: "Save as New Patch…")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .renameFile
+        case .alertSecondButtonReturn: return .saveAsNew
+        default: return .cancel
+        }
+    }
+
+    /// Writes the patch out under its new name and clears the old file.
+    /// The slot prefix is kept so the patch holds its place on the card.
+    private func renameOnDisk(_ document: PatchDocument, from oldURL: URL,
+                              to name: String) {
+        let slot = ZoiaPatchNaming.slot(fromFileName: oldURL.lastPathComponent)
+            ?? ZoiaPatchNaming.defaultSlot
+        let newURL = oldURL.deletingLastPathComponent()
+            .appendingPathComponent(ZoiaPatchNaming.fileName(for: name, slot: slot))
+        // Some other patch already holds that name. The save panel owns
+        // that conversation, overwrite warning and all.
+        guard newURL == oldURL
+                || !FileManager.default.fileExists(atPath: newURL.path) else {
+            return saveAs()
+        }
+        writeBin(document, to: newURL)
+        // Only once the new file is really there and adopted.
+        guard newURL != oldURL, fileURL == newURL else { return }
+        try? FileManager.default.removeItem(at: oldURL)
+        PatchLayoutStore.discard(for: oldURL)
+    }
+
     // MARK: - Save
 
-    /// ⌘S: write back to the open file; an untitled patch picks its
-    /// home through the save panel once and saves silently after.
+    /// ⌘S: write back to the open file. A patch that has never been
+    /// saved goes the long way round, because the name the device will
+    /// show has to be settled before anything reaches disk.
     func save() {
         guard let document else { return }
-        writeBin(document, to: fileURL ?? Self.runSavePanel(document), adopt: true)
+        guard let fileURL else { return saveAs() }
+        writeBin(document, to: fileURL)
     }
 
-    /// ⇧⌘S: write to a new home and keep working there.
+    /// ⇧⌘S: name the patch, write it to a new home, keep working there.
     func saveAs() {
-        guard let document else { return }
-        writeBin(document, to: Self.runSavePanel(document), adopt: true)
+        guard let document, let choice = Self.runSavePanel(document) else { return }
+        writeBin(document, to: choice.url, patchName: choice.patchName)
     }
 
-    private func writeBin(_ document: PatchDocument, to url: URL?, adopt: Bool) {
+    private func writeBin(_ document: PatchDocument, to url: URL,
+                          patchName: String? = nil) {
         let blockers = document.gridExportBlockers
         guard blockers.isEmpty else {
             loadError = "Cannot save.\n" + blockers.joined(separator: "\n")
             return
         }
-        guard let url else { return }
+        // The name is part of the bytes, so it is adopted before the
+        // encode rather than after the write.
+        if let patchName { document.adoptPatchName(patchName) }
         do {
             try document.encodeBin().write(to: url)
-            if adopt {
-                if document.patchName.isEmpty {
-                    document.patchName = url.deletingPathExtension().lastPathComponent
-                }
-                fileURL = url
-                document.markSaved()
-                Self.rememberLastPatch(url)
-                persistLayout()
-            }
+            fileURL = url
+            document.markSaved()
+            Self.rememberLastPatch(url)
+            persistLayout()
         } catch {
             loadError = "Save failed: \(error)"
         }
     }
 
-    private static func runSavePanel(_ document: PatchDocument) -> URL? {
+    /// The panel carries the ZOIA name as well as the filename: the name
+    /// is what the device's patch menu reads, and the filename follows
+    /// it as `NNN_zoia_Name.bin` until the user types over it.
+    private static func runSavePanel(_ document: PatchDocument) -> (url: URL, patchName: String)? {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
-        panel.nameFieldStringValue =
-            "\(document.patchName.isEmpty ? "patch" : document.patchName).bin"
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
+        let naming = SavePanelNaming(panel: panel, patchName: document.patchName)
+        panel.accessoryView = naming.accessoryView
+        naming.syncFileName()
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return (url, naming.patchName)
     }
 
     // MARK: - Canvas layout sidecar
@@ -168,6 +252,47 @@ final class PatchSession: Identifiable {
         }
         openBin(at: url)
         if stale { Self.rememberLastPatch(url) }
+    }
+}
+
+/// The save panel's "ZOIA patch name" field. Owns the rule that the
+/// filename trails the name, and holds the name to the 16 bytes the
+/// header stores so what the panel shows is what the device will show.
+@MainActor
+private final class SavePanelNaming: NSObject, NSTextFieldDelegate {
+    private weak var panel: NSSavePanel?
+    private let field: NSTextField
+
+    init(panel: NSSavePanel, patchName: String) {
+        self.panel = panel
+        field = NSTextField(string: ZoiaPatchNaming.clamp(patchName))
+        super.init()
+        field.delegate = self
+        field.placeholderString = "Shown in the ZOIA's patch menu"
+    }
+
+    var patchName: String { ZoiaPatchNaming.clamp(field.stringValue) }
+
+    lazy var accessoryView: NSView = {
+        let stack = NSStackView(views: [
+            NSTextField(labelWithString: "ZOIA patch name:"), field,
+        ])
+        stack.orientation = .horizontal
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 20, bottom: 4, right: 20)
+        field.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        return stack
+    }()
+
+    func syncFileName() {
+        panel?.nameFieldStringValue = ZoiaPatchNaming.fileName(for: patchName)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        // Typing past 16 bytes would silently vanish at encode time, so
+        // the field refuses the extra characters instead.
+        let clamped = patchName
+        if field.stringValue != clamped { field.stringValue = clamped }
+        syncFileName()
     }
 }
 

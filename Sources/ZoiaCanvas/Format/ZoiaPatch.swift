@@ -97,3 +97,64 @@ enum ZoiaText {
         return String(decoding: prefix, as: UTF8.self)
     }
 }
+
+/// The name the device's patch menu shows lives in two places at once:
+/// the 16-byte header field, and the SD-card filename, which repeats it
+/// behind an `NNN_zoia_` slot prefix with every non-alphanumeric
+/// character written as an underscore. All 128 factory patches in the
+/// test corpus agree on that, character for character — including
+/// `017_zoia_V_Sync.bin`, whose header name is "V-Sync". The filename is
+/// therefore derived from the name, never the reverse: the header keeps
+/// the punctuation the filename throws away.
+enum ZoiaPatchNaming {
+    /// The header field is 16 bytes, so that is the whole name budget.
+    static let maxNameBytes = 16
+
+    /// Holds a name to what the header can store, without splitting a
+    /// character across the boundary.
+    static func clamp(_ name: String) -> String {
+        var result = ""
+        for character in name {
+            guard result.utf8.count + String(character).utf8.count <= maxNameBytes
+            else { break }
+            result.append(character)
+        }
+        return result
+    }
+
+    /// Where a patch lands on the card when the user has not said
+    /// otherwise. Slot 0 is the one the device boots into, so a new
+    /// patch takes the next one rather than displacing it.
+    static let defaultSlot = 1
+
+    /// "Grains de folie" → "001_zoia_Grains_de_folie.bin". The slot is a
+    /// starting point; the save panel leaves the filename editable.
+    static func fileName(for patchName: String, slot: Int = defaultSlot) -> String {
+        // ASCII alphanumerics survive; the device writes everything else
+        // — spaces, hyphens — as an underscore.
+        let stem = String(clamp(patchName).map {
+            $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "_"
+        })
+        return String(format: "%03d_zoia_%@.bin", slot, stem)
+    }
+
+    /// A best guess at the name behind a filename, for the one case that
+    /// needs it: a patch whose header name is blank. Lossy on purpose —
+    /// the filename cannot say whether an underscore was a space or a
+    /// hyphen — so it is never used to overwrite a name the header has.
+    static func patchName(fromFileName fileName: String) -> String {
+        var stem = (fileName as NSString).deletingPathExtension
+        if let separator = stem.range(of: "_zoia_") {
+            stem = String(stem[separator.upperBound...])
+        }
+        return clamp(stem.replacingOccurrences(of: "_", with: " "))
+    }
+
+    /// The slot a file already claims, so a rename keeps its place on
+    /// the card. Nil when the filename does not follow the convention.
+    static func slot(fromFileName fileName: String) -> Int? {
+        let stem = (fileName as NSString).deletingPathExtension
+        guard let separator = stem.range(of: "_zoia_") else { return nil }
+        return Int(stem[stem.startIndex..<separator.lowerBound])
+    }
+}

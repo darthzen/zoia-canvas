@@ -86,8 +86,17 @@ struct ContentView: View {
                 InspectorView(document: document, moduleID: selected)
             }
         }
-        .navigationTitle((document.patchName.isEmpty ? "Untitled" : document.patchName)
-            + (document.isEdited ? " *" : ""))
+        // Editable in place. This is the name the ZOIA's patch menu
+        // shows, and the save panel derives the filename from it, so
+        // the title bar is the one place a patch gets named.
+        .navigationTitle(Binding(
+            get: { document.patchName },
+            set: { session.rename(to: $0) }))
+        // The title now belongs to the name, so unsaved state moves to
+        // the dot macOS puts in the close button.
+        .onChange(of: document.isEdited, initial: true) {
+            session.reflectEditedState(document.isEdited)
+        }
         // Drop a .bin anywhere on the window to open it. The palette's
         // module drags are plain-text payloads, so they never reach this
         // file-URL handler.

@@ -48,6 +48,13 @@ enum PatchLayoutStore {
         try? data.write(to: file(for: patch))
     }
 
+    /// Drops the sidecar for a path that no longer holds the patch —
+    /// after a rename, the arrangement has already been rewritten under
+    /// the new path and the old key would linger forever.
+    static func discard(for patch: URL) {
+        try? FileManager.default.removeItem(at: file(for: patch))
+    }
+
     /// Reapplies a stored arrangement. The module count is the sanity
     /// check: a patch edited elsewhere no longer matches, and the
     /// import layout takes over rather than scattering wrong positions.
