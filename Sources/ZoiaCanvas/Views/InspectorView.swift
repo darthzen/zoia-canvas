@@ -196,7 +196,7 @@ struct InspectorView: View {
     private func paramsSection(index: Int) -> some View {
         let blocks = document.paramBlocks(of: document.modules[index])
         if !blocks.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Params").font(.subheadline.bold())
                     Spacer()
@@ -210,18 +210,10 @@ struct InspectorView: View {
                     .help("Show values as raw CV or as the MIDI note the pitch mapping lands on")
                 }
                 ForEach(Array(blocks.enumerated()), id: \.offset) { paramIndex, block in
-                    HStack(spacing: 6) {
-                        Text(block.key)
-                            .font(.caption)
-                            .frame(width: 90, alignment: .leading)
-                            .lineLimit(1)
-                        Slider(value: Binding(
-                            get: { paramFraction(paramIndex) },
-                            set: { document.setParam(moduleID, paramIndex: paramIndex, fraction: $0) }))
-                        Text(valueLabel(paramFraction(paramIndex)))
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30)
+                    ParamRow(key: block.key,
+                             fraction: paramFraction(paramIndex),
+                             showNoteNames: showNoteNames) { fraction in
+                        document.setParam(moduleID, paramIndex: paramIndex, fraction: fraction)
                     }
                 }
             }
@@ -236,12 +228,113 @@ struct InspectorView: View {
         else { return 0 }
         return Double(document.modules[i].paramsRaw[paramIndex]) / 65535
     }
+}
 
-    private func valueLabel(_ fraction: Double) -> String {
-        guard showNoteNames else { return String(format: "%.2f", fraction) }
-        let note = Int((fraction * 127).rounded())
-        let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-        return names[note % 12] + String(note / 12 - 1)
+/// One param block: a full-width slider with the value in a field you can
+/// type into. In Note mode the slider steps by whole semitones — 127
+/// notes across a panel-width track is otherwise too fine to land on the
+/// note you want — and the field takes note names ("C4", "F#3", "Bb2") or
+/// a bare MIDI note number.
+private struct ParamRow: View {
+    let key: String
+    let fraction: Double
+    let showNoteNames: Bool
+    let commit: (Double) -> Void
+
+    @State private var text = ""
+    @FocusState private var editing: Bool
+
+    private static let noteNames = ["C", "C#", "D", "D#", "E", "F",
+                                    "F#", "G", "G#", "A", "A#", "B"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(key)
+                    .font(.caption)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                TextField("", text: $text)
+                    .font(.system(size: 10, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 58)
+                    .focused($editing)
+                    .onSubmit { commitText() }
+                    .help(showNoteNames
+                          ? "Type a note name (C4, F#3, Bb2) or a MIDI note number 0–127"
+                          : "Type a CV value from 0 to 1")
+            }
+            slider
+        }
+        .onAppear { text = Self.label(fraction, notes: showNoteNames) }
+        // While the field has focus the value it drives is not allowed to
+        // overwrite what is being typed.
+        .onChange(of: fraction) { if !editing { text = Self.label(fraction, notes: showNoteNames) } }
+        .onChange(of: showNoteNames) { text = Self.label(fraction, notes: showNoteNames) }
+        .onChange(of: editing) { _, focused in if !focused { commitText() } }
+    }
+
+    @ViewBuilder
+    private var slider: some View {
+        if showNoteNames {
+            Slider(value: Binding(
+                get: { (fraction * 127).rounded() },
+                set: { commit($0 / 127) }), in: 0...127, step: 1)
+        } else {
+            Slider(value: Binding(get: { fraction }, set: { commit($0) }))
+        }
+    }
+
+    /// Commit the typed text, then restate the field from the value that
+    /// was actually stored — `fraction` still holds the pre-commit value
+    /// on this pass, so the label is built from the parsed number.
+    private func commitText() {
+        guard let parsed = parse(text) else {
+            text = Self.label(fraction, notes: showNoteNames)
+            return
+        }
+        commit(parsed)
+        text = Self.label(parsed, notes: showNoteNames)
+    }
+
+    private func parse(_ raw: String) -> Double? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        guard showNoteNames else {
+            guard let value = Double(trimmed) else { return nil }
+            return min(max(value, 0), 1)
+        }
+        if let note = Int(trimmed) {
+            return Double(min(max(note, 0), 127)) / 127
+        }
+        return Self.midiNote(from: trimmed).map { Double($0) / 127 }
+    }
+
+    private static func label(_ fraction: Double, notes: Bool) -> String {
+        guard notes else { return String(format: "%.2f", fraction) }
+        let note = min(max(Int((fraction * 127).rounded()), 0), 127)
+        return noteNames[note % 12] + String(note / 12 - 1)
+    }
+
+    /// "C4", "F#3", "Bb2", "Eb-1" → MIDI note, with C-1 as note 0 to
+    /// match the readout.
+    private static func midiNote(from text: String) -> Int? {
+        var chars = Array(text.uppercased())
+        let steps: [Character: Int] = ["C": 0, "D": 2, "E": 4, "F": 5,
+                                       "G": 7, "A": 9, "B": 11]
+        guard let letter = chars.first, let base = steps[letter] else { return nil }
+        chars.removeFirst()
+        var semitone = base
+        while let accidental = chars.first,
+              accidental == "#" || accidental == "♯"
+              || accidental == "B" || accidental == "♭" {
+            semitone += (accidental == "#" || accidental == "♯") ? 1 : -1
+            chars.removeFirst()
+        }
+        guard let octave = Int(String(chars)) else { return nil }
+        let note = (octave + 1) * 12 + semitone
+        return (0...127).contains(note) ? note : nil
     }
 }
 
