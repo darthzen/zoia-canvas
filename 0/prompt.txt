@@ -1,0 +1,1 @@
+When I create a sequencer element on the canvas, the sliders to get to the proper notes are too small and sensitive. I want to be able to have the option to type in the note in addition to moving the slider.
