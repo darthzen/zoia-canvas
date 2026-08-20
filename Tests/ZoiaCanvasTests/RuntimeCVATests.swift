@@ -70,15 +70,15 @@ import Testing
         let runtime = PatchRuntime(document: document, sampleRate: 48000)
 
         setCV(runtime, node: 0, block: 32, 0.6)  // step index 2
-        var out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        var out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.5) < 0.01, "gate 0.6 → \(out[0])")
 
         setCV(runtime, node: 0, block: 32, 0)
-        out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.1) < 0.01)
 
         setCV(runtime, node: 0, block: 32, 0.99)  // step index 3
-        out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.7) < 0.01)
     }
 
@@ -93,24 +93,25 @@ import Testing
         document.setParam(seq.id, paramIndex: 1, fraction: 0.8)
         let runtime = PatchRuntime(document: document, sampleRate: 48000)
 
-        var out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        var out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.2) < 0.01, "starts on step 1")
         pulse(runtime, node: 0, block: 32)
-        #expect(abs((runtime.nodes[0].cvOut[36] ?? 0) - 0.8) < 0.01)
+        #expect(abs((runtime.nodes[0].cvOut[34] ?? 0) - 0.8) < 0.01)
         pulse(runtime, node: 0, block: 32)
         pulse(runtime, node: 0, block: 32)
-        #expect(abs((runtime.nodes[0].cvOut[36] ?? 0) - 0.8) < 0.01,
+        #expect(abs((runtime.nodes[0].cvOut[34] ?? 0) - 0.8) < 0.01,
                 "one_shot holds the last step")
 
         pulse(runtime, node: 0, block: 33)  // queue start
-        out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.2) < 0.01, "restart rewinds to step 1")
         pulse(runtime, node: 0, block: 32)
-        #expect(abs((runtime.nodes[0].cvOut[36] ?? 0) - 0.8) < 0.01,
+        #expect(abs((runtime.nodes[0].cvOut[34] ?? 0) - 0.8) < 0.01,
                 "restart rearms the gate")
     }
 
-    /// Tracks 2+ exist as outputs but read 0 (saved_data not decoded).
+    /// Tracks 2+ exist as outputs; a canvas-authored module has no
+    /// saved_data rows for them yet, so they read 0.
     @Test func sequencerExtraTracksOutputZero() throws {
         let document = try makeDocument()
         let seq = try #require(document.addModule(typeID: 4, at: .zero))
@@ -118,11 +119,11 @@ import Testing
         document.setOption(seq.id, optionIndex: 1, byte: 2)  // 3 tracks
         document.setParam(seq.id, paramIndex: 0, fraction: 0.4)
         let runtime = PatchRuntime(document: document, sampleRate: 48000)
-        renderCollect(runtime, node: 0, block: 36, blocks: 1)
-        #expect(abs((runtime.nodes[0].cvOut[36] ?? 0) - 0.4) < 0.01)
-        #expect(runtime.nodes[0].cvOut[37] == 0)
-        #expect(runtime.nodes[0].cvOut[38] == 0)
-        #expect(runtime.nodes[0].cvOut[39] == nil, "only 3 tracks active")
+        renderCollect(runtime, node: 0, block: 34, blocks: 1)
+        #expect(abs((runtime.nodes[0].cvOut[34] ?? 0) - 0.4) < 0.01)
+        #expect(runtime.nodes[0].cvOut[35] == 0)
+        #expect(runtime.nodes[0].cvOut[36] == 0)
+        #expect(runtime.nodes[0].cvOut[37] == nil, "only 3 tracks active")
     }
 
     /// key_input "increment": each key gate writes the key note into the
@@ -134,15 +135,15 @@ import Testing
         document.setOption(seq.id, optionIndex: 4, byte: 2)  // increment
         let runtime = PatchRuntime(document: document, sampleRate: 48000)
 
-        setCV(runtime, node: 0, block: 34, 0.9)
-        pulse(runtime, node: 0, block: 35)
-        setCV(runtime, node: 0, block: 34, 0.6)
-        pulse(runtime, node: 0, block: 35)
+        setCV(runtime, node: 0, block: 42, 0.9)
+        pulse(runtime, node: 0, block: 43)
+        setCV(runtime, node: 0, block: 42, 0.6)
+        pulse(runtime, node: 0, block: 43)
 
-        let out = renderCollect(runtime, node: 0, block: 36, blocks: 1)
+        let out = renderCollect(runtime, node: 0, block: 34, blocks: 1)
         #expect(abs(out[0] - 0.9) < 0.01, "step 1 took the first key note")
         pulse(runtime, node: 0, block: 32)
-        #expect(abs((runtime.nodes[0].cvOut[36] ?? 0) - 0.6) < 0.01,
+        #expect(abs((runtime.nodes[0].cvOut[34] ?? 0) - 0.6) < 0.01,
                 "step 2 took the second key note")
     }
 

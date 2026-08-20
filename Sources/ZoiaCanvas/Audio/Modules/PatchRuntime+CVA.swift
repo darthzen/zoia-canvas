@@ -69,16 +69,19 @@ extension PatchRuntime {
         // Key input: a rising key gate writes the key note CV into a step.
         // Assumption: "increment" writes at an advancing cursor; the other
         // modes write the currently playing step (the device's "selected"
-        // step is a UI notion with no runtime counterpart).
+        // step is a UI notion with no runtime counterpart). Blocks 42/43
+        // are the catalog's parked positions for the key inputs — where
+        // the device really puts them is unverified (no corpus instance
+        // has key_input on).
         let keyMode = node.optionText(4)
         if keyMode != "off" {
             let state = node.state(SequencerState())
-            let keyGate = cvIn(node: index, block: 35)
+            let keyGate = cvIn(node: index, block: 43)
             if keyGate >= 0.5, state.lastKeyGate < 0.5 {
                 let target = keyMode == "increment"
                     ? min(state.writeCursor, steps - 1) : node.step
                 if let i = node.paramIndexByPosition[target] {
-                    node.params[i] = cvIn(node: index, block: 34)
+                    node.params[i] = cvIn(node: index, block: 42)
                 }
                 state.writeCursor = (state.writeCursor + 1) % steps
             }
@@ -92,7 +95,7 @@ extension PatchRuntime {
         // saved_data step matrix are the only storage.
         let stepValue = cvIn(node: index, block: node.step)
         for track in 0..<tracks {
-            node.cvOut[36 + track] = track == 0
+            node.cvOut[34 + track] = track == 0
                 ? stepValue
                 : SequencerSavedData.step(node.savedData, track: track, step: node.step) ?? 0
         }

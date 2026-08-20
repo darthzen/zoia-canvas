@@ -652,70 +652,70 @@
      "key": "key_input_note",
      "isDefault": false,
      "isParam": true,
-     "position": 34,
+     "position": 42,
      "type": "cv_in"
     },
     {
      "key": "key_input_gate",
      "isDefault": false,
      "isParam": true,
-     "position": 35,
+     "position": 43,
      "type": "cv_in"
     },
     {
      "key": "out_track_1",
      "isDefault": true,
      "isParam": false,
-     "position": 36,
+     "position": 34,
      "type": "cv_out"
     },
     {
      "key": "out_track_2",
      "isDefault": false,
      "isParam": false,
-     "position": 37,
+     "position": 35,
      "type": "cv_out"
     },
     {
      "key": "out_track_3",
      "isDefault": false,
      "isParam": false,
-     "position": 38,
+     "position": 36,
      "type": "cv_out"
     },
     {
      "key": "out_track_4",
      "isDefault": false,
      "isParam": false,
-     "position": 39,
+     "position": 37,
      "type": "cv_out"
     },
     {
      "key": "out_track_5",
      "isDefault": false,
      "isParam": false,
-     "position": 40,
+     "position": 38,
      "type": "cv_out"
     },
     {
      "key": "out_track_6",
      "isDefault": false,
      "isParam": false,
-     "position": 41,
+     "position": 39,
      "type": "cv_out"
     },
     {
      "key": "out_track_7",
      "isDefault": false,
      "isParam": false,
-     "position": 42,
+     "position": 40,
      "type": "cv_out"
     },
     {
      "key": "out_track_8",
      "isDefault": false,
      "isParam": false,
-     "position": 43,
+     "position": 41,
      "type": "cv_out"
     }
    ],

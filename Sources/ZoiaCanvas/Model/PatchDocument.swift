@@ -187,8 +187,27 @@ final class PatchDocument {
     func setParam(_ id: UUID, paramIndex: Int, fraction: Double) {
         guard let index = modules.firstIndex(where: { $0.id == id }),
               paramIndex < modules[index].paramsRaw.count else { return }
-        modules[index].paramsRaw[paramIndex] = Int((fraction.clamped01 * 65535).rounded())
+        let raw = Int((fraction.clamped01 * 65535).rounded())
+        modules[index].paramsRaw[paramIndex] = raw
+        mirrorSequencerStep(index: index, paramIndex: paramIndex, rawValue: raw)
         structureRevision += 1
+    }
+
+    /// The device keeps a sequencer's step params and its saved_data step
+    /// matrix in sync; a canvas edit that wrote only the params would
+    /// drift the two apart (and leave canvas-authored modules with no
+    /// blob at all). Step blocks sit at catalog positions 0…31, and the
+    /// position is the step index.
+    private func mirrorSequencerStep(index: Int, paramIndex: Int, rawValue: Int) {
+        guard modules[index].typeID == 4 else { return }
+        let blocks = paramBlocks(of: modules[index])
+        guard paramIndex < blocks.count,
+              let step = blocks[paramIndex].position, step < 32 else { return }
+        SequencerSavedData.setStep(
+            &modules[index].savedData, track: 0, step: step, rawValue: rawValue)
+        // The device's size field always equals the blob's byte count;
+        // keep that true after a synthesis grows the blob from empty.
+        modules[index].savedDataSizeField = modules[index].savedData.count
     }
 
     func removeModule(_ id: UUID) {

@@ -44,7 +44,7 @@ private final class MidiRecorder: MidiPort {
         var seen: [Float] = []
         for _ in 0..<4000 {
             runtime.render(frames: 64, outputL: &left, outputR: &right)
-            let value = runtime.nodes[1].cvOut[36] ?? -1
+            let value = runtime.nodes[1].cvOut[34] ?? -1
             if seen.last != value { seen.append(value) }
         }
         // The sequencer must have visited all four step values in order.
@@ -120,7 +120,7 @@ private final class MidiRecorder: MidiPort {
             from: PortRef(module: lfo.id, blockPosition: 3, type: .cvOut),
             to: PortRef(module: seq.id, blockPosition: 32, type: .cvIn))
         document.connect(
-            from: PortRef(module: seq.id, blockPosition: 36, type: .cvOut),
+            from: PortRef(module: seq.id, blockPosition: 34, type: .cvOut),
             to: PortRef(module: midiOut.id, blockPosition: 0, type: .cvIn))
         document.connect(
             from: PortRef(module: lfo.id, blockPosition: 3, type: .cvOut),

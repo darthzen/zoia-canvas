@@ -20,7 +20,7 @@ REFS = SCRATCH / "refs"
 A_PATH = REFS / "zoia_lib/zoia_lib/common/schemas/ModuleIndex.json"
 B_PATH = REFS / "zoia_lib_macOS/ZoiaLibMac/ZoiaLibMac/Resources/module_index_ordered.json"
 C_PATH = Path("/Users/rashford/Library/CloudStorage/Dropbox/Claude Cowork/Songwriting/Manuals/Pedals/empress-effects-zoia-module-index-firmware5.csv")
-OUT = Path("/Users/rashford/Developer/zoia-canvas/Sources/ZoiaCanvas/Resources/ModuleCatalog.json")
+OUT = SCRATCH.parent / "Sources/ZoiaCanvas/Resources/ModuleCatalog.json"
 
 index_a = json.load(open(A_PATH))          # insertion order preserved
 index_b = json.load(open(B_PATH))
@@ -131,6 +131,24 @@ for mid in sorted(index_a, key=int):
         "paramDefaults": a.get("param_defaults", {}),
         "doc": doc,
     })
+
+# ---- Post-merge corrections: device evidence overriding upstream ----
+# Sequencer (id 4): both upstream sources place key_input_note/gate at grid
+# positions 34/35 and the track outputs at 36+. The device disagrees — a
+# device-written patch (000_zoia_.bin, 2026-08-19) cables its single track
+# output as block 34, and a corpus histogram of sequencer cable source
+# blocks shows 34 on 1-track instances, 35 first appearing at 2+ tracks,
+# 36 at 3+. So out_track_1..8 live at 34..41. Where the key-input blocks
+# really sit is unverified (no corpus instance has key_input on); they are
+# parked past the tracks at 42/43 until there is evidence. Array order is
+# load-bearing (BlockLayout.swift case 4 indexes it) — positions only.
+SEQ_POSITIONS = {f"out_track_{i + 1}": 34 + i for i in range(8)}
+SEQ_POSITIONS |= {"key_input_note": 42, "key_input_gate": 43}
+seq = next(m for m in modules if m["id"] == 4)
+for block in seq["blocks"]:
+    if block["key"] in SEQ_POSITIONS:
+        block["position"] = SEQ_POSITIONS[block["key"]]
+
 
 def sanitize(o):
     """Strict JSON has no Infinity/NaN; encode them as strings ("inf"/"-inf")."""

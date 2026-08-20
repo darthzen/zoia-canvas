@@ -79,6 +79,68 @@ private func sequencerEntries(_ relPath: String) throws -> [ZoiaModuleEntry] {
         #expect(seen == 77, "corpus holds 77 sequencer instances, saw \(seen)")
     }
 
+    /// Every corpus cable that touches a sequencer must land on a block
+    /// the catalog says is active there, with the right direction. This
+    /// is the test that would have caught the catalog placing the track
+    /// outputs at 36+ when the device cables them from 34+ (every
+    /// 1-track sequencer patch silently read a nonexistent block).
+    @Test func corpusSequencerCableEndpointsResolve() throws {
+        let catalog = try ModuleCatalog.loadBundled()
+        let bundle = Bundle(for: CorpusLocator.self)
+        let root = try #require(bundle.resourceURL?.appendingPathComponent("Corpus"))
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "bin" } ?? []
+        var checked = 0
+        for url in files {
+            guard let patch = try? ZoiaPatchBinary.decode(Data(contentsOf: url)) else { continue }
+            func endpoint(_ moduleIndex: Int, _ block: Int, isSource: Bool) throws {
+                let entry = patch.modules[moduleIndex]
+                guard entry.typeID == 4 else { return }
+                checked += 1
+                let spec = try #require(catalog[entry.typeID])
+                let blocks = try BlockLayout.activeBlocks(
+                    spec: spec, optionBytes: entry.optionBytes, version: entry.version)
+                let hit = blocks.first { $0.position == block }
+                let resolved = try #require(
+                    hit, "\(url.lastPathComponent): no active sequencer block at \(block)")
+                #expect(resolved.type.isOutput == isSource,
+                        "\(url.lastPathComponent): block \(block) direction")
+            }
+            for cable in patch.connections {
+                try endpoint(cable.sourceModule, cable.sourceBlock, isSource: true)
+                try endpoint(cable.destModule, cable.destBlock, isSource: false)
+            }
+        }
+        #expect(checked > 100, "corpus sequencer cable endpoints seen: \(checked)")
+    }
+
+    /// A step-param edit mirrors into the saved_data matrix the way the
+    /// device does, synthesizing the 572-byte blob (device metadata
+    /// included) for a canvas-authored module that starts with none.
+    @Test @MainActor func stepEditsMirrorIntoBlob() throws {
+        let document = PatchDocument(catalog: try ModuleCatalog.loadBundled())
+        let seq = try #require(document.addModule(typeID: 4, at: .zero))
+        document.setOption(seq.id, optionIndex: 0, byte: 3)  // 4 steps
+        document.setParam(seq.id, paramIndex: 2, fraction: 0.5)
+        let module = try #require(document.module(seq.id))
+        #expect(module.savedData.count == 572)
+        #expect(module.savedDataSizeField == 572)
+        let value = try #require(SequencerSavedData.step(module.savedData, track: 0, step: 2))
+        #expect(abs(value - 0.5) < 0.001)
+        #expect(SequencerSavedData.step(module.savedData, track: 0, step: 0) == 0,
+                "untouched steps stay zero")
+        #expect(module.savedData[556..<564].allSatisfy { $0 == 0x01 })
+        #expect(module.savedData[564..<572].allSatisfy { $0 == 0 },
+                "track types default to CV")
+        // The gate threshold is a param too (position 32); it must not
+        // land in the step matrix.
+        let gateIndex = document.paramBlocks(of: module).firstIndex { $0.position == 32 }
+        document.setParam(seq.id, paramIndex: try #require(gateIndex), fraction: 1)
+        let after = try #require(document.module(seq.id))
+        #expect(SequencerSavedData.step(after.savedData, track: 1, step: 0) == 0)
+    }
+
     /// Out-of-range coordinates and empty blobs (canvas-authored modules)
     /// decode to nil, never trap.
     @Test func stepBoundsAndEmptyBlob() {
@@ -113,7 +175,7 @@ private func sequencerEntries(_ relPath: String) throws -> [ZoiaModuleEntry] {
             node.params[gate] = 1; render()
             node.params[gate] = 0; render()
         }
-        func outputs() -> [Float] { (0...3).map { node.cvOut[36 + $0] ?? 0 } }
+        func outputs() -> [Float] { (0...3).map { node.cvOut[34 + $0] ?? 0 } }
 
         render()
         #expect(outputs().map { $0 > 0.5 } == [true, false, false, false], "step 1: track 1")
