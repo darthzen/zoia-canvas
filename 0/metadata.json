@@ -1,0 +1,96 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "01M0EJAHGVNQWVPYPY11DPNMPE",
+  "session_id": "6875bbee-5e91-4ed0-a998-0eea42529e13",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-20T03:09:40.678536Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "Sources/ZoiaCanvas/Audio/Modules/PatchRuntime+CVA.swift",
+    "Sources/ZoiaCanvas/Format/SequencerSavedData.swift",
+    "Sources/ZoiaCanvas/Model/PatchDocument.swift",
+    "Sources/ZoiaCanvas/Resources/ModuleCatalog.json",
+    "Tests/ZoiaCanvasTests/PatchRuntimeTests.swift",
+    "Tests/ZoiaCanvasTests/RuntimeCVATests.swift",
+    "Tests/ZoiaCanvasTests/SequencerSavedDataTests.swift",
+    "tools/build_catalog.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "0f63986f99c4",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 106,
+    "cache_creation_tokens": 137939,
+    "cache_read_tokens": 6438810,
+    "output_tokens": 47012,
+    "api_call_count": 53
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01XUZWWTDYv7rXdw1SeJFXE1",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "rick-preferences"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "0f63986f99c4",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 31,
+        "end": 32,
+        "entry_ids": [
+          "4fc41c2c-2332-41fc-ab0c-719fcb289a3d"
+        ],
+        "tool_use_id": "toolu_01XUZWWTDYv7rXdw1SeJFXE1"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01XUZWWTDYv7rXdw1SeJFXE1"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: rick-preferences",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-20T03:09:40.645039Z",
+    "agent_lines": 180,
+    "agent_removed": 43,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 180,
+    "total_lines_changed": 223,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 180,
+      "agent_lines_removed": 43
+    }
+  ]
+}
